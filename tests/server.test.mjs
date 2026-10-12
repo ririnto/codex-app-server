@@ -2371,3 +2371,142 @@ test("wildcard monitor cancellation closes a pending later page without inspecti
   );
   await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
 });
+
+for (const phase of ["initialize", "thread/read"]) {
+  for (const name of ["codex_send", "codex_steer", "codex_interrupt"]) {
+    test(`curated ${name} cancellation during ${phase} prevents writes and releases its writer`, async (t) => {
+      let paused = true;
+      let lateReply;
+      const { client, connections, requests } = await fixture(
+        t,
+        ({ message, reply }) => {
+          const result =
+            message.method === "thread/read"
+              ? {
+                  thread: {
+                    status: { type: "active" },
+                    turns: [{ id: "active", status: "inProgress" }]
+                  }
+                }
+              : {};
+          if (paused && message.method === phase) {
+            lateReply = () => reply(result);
+          } else {
+            reply(result);
+          }
+        },
+        { failInitialize: phase === "initialize" }
+      );
+      const controller = new AbortController();
+      const pending = client.callTool(
+        {
+          arguments: {
+            mode: "steer",
+            text: "Fixture cancelled input",
+            thread_id: "watched"
+          },
+          name
+        },
+        undefined,
+        { signal: controller.signal }
+      );
+      const rejected = assert.rejects(pending, /Fixture cancellation/u);
+      await t.waitFor(() => assert.ok(lateReply), { timeout: 2000 });
+      controller.abort(new Error("Fixture cancellation"));
+      await rejected;
+      await t.waitFor(() => assert.equal(connections.size, 0), {
+        timeout: 2000
+      });
+      lateReply();
+      assert.ok(
+        requests.every((request) =>
+          ["initialize", "thread/read"].includes(request.method)
+        )
+      );
+      const receipt = await call(client, "codex_queue", {
+        thread_id: "watched"
+      });
+      assert.deepEqual(receipt.value.messages, []);
+      paused = false;
+      const fresh = await call(client, "codex_interrupt", {
+        thread_id: "watched"
+      });
+      assert.equal(fresh.error, false);
+      assert.equal(fresh.value.status, "interrupted");
+    });
+  }
+}
+
+test("monitor deduplicates newer idle inspection failures against buffered older completions", async (t) => {
+  const error = { code: "model_not_found", message: "Fixture model is absent" };
+  let inspections = 0;
+  const { connections, socket } = await fixture(
+    t,
+    ({ message, reply, connections: targets }) => {
+      if (message.method === "thread/loaded/list") {
+        reply({ data: ["watched"] });
+      } else if (message.method === "thread/turns/list") {
+        inspections += 1;
+        if (inspections === 2) {
+          const [owner] = targets;
+          for (const id of ["failure-a", "failure-b"]) {
+            owner.send(
+              JSON.stringify({
+                method: "turn/completed",
+                params: {
+                  threadId: "watched",
+                  turn: { error, id, status: "failed" }
+                }
+              })
+            );
+          }
+          owner.send(
+            JSON.stringify({
+              method: "thread/status/changed",
+              params: { status: { type: "active" }, threadId: "sentinel" }
+            })
+          );
+          reply({ data: [{ error, id: "failure-b", status: "failed" }] });
+        } else {
+          reply({ data: [] });
+        }
+      } else {
+        reply({ thread: { status: { type: "active" } } });
+      }
+    }
+  );
+  const { child, events, exited } = monitor(t, socket, ["--thread", "*"]);
+  await t.waitFor(() => assert.equal(events[0]?.status, "active"));
+  const [owner] = connections;
+  owner.send(
+    JSON.stringify({
+      method: "turn/completed",
+      params: {
+        threadId: "watched",
+        turn: { error, id: "failure-a", status: "failed" }
+      }
+    })
+  );
+  await t.waitFor(() =>
+    assert.equal(
+      events.filter((event) => event.event === "turnError").length,
+      1
+    )
+  );
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: { type: "idle" }, threadId: "watched" }
+    })
+  );
+  await t.waitFor(() => assert.equal(events.at(-1)?.threadId, "sentinel"));
+  assert.deepEqual(
+    events
+      .filter((event) => event.event === "turnError")
+      .map((event) => event.turnId),
+    ["failure-a", "failure-b"]
+  );
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  await t.waitFor(() => assert.equal(connections.size, 0));
+});
