@@ -1,0 +1,50 @@
+{
+  "name": "@sinon/codex-app-server",
+  "version": "1.1.1",
+  "private": true,
+  "description": "Stdio MCP access to the running Codex app-server Unix control socket.",
+  "license": "MIT",
+  "bin": {
+    "codex-app-server": "./server.mjs",
+    "codex-thread-monitor": "./monitor.mjs"
+  },
+  "files": [
+    "server.mjs",
+    "monitor.mjs",
+    "monitors/",
+    "lib/",
+    "skills/"
+  ],
+  "type": "module",
+  "scripts": {
+    "check": "run-p check:*",
+    "check:runtime": "node --test tests/server.test.mjs",
+    "check:issue-forms": "node release/check-issue-forms.mjs",
+    "check:plugin-version": "node release/check-plugin-version.mjs",
+    "check:validation-tests": "node --test tests/validation.test.mjs",
+    "check:markdownlint-cli2": "markdownlint-cli2",
+    "check:ultracite": "ultracite check",
+    "fix": "run-p fix:*",
+    "fix:markdownlint-cli2": "markdownlint-cli2 --fix",
+    "fix:ultracite": "ultracite fix",
+    "check:plugin-tests": "node --test tests/plugin.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "ws": "8.22.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "markdownlint": "catalog:",
+    "markdownlint-cli2": "catalog:",
+    "markdownlint-rule-relative-links": "catalog:",
+    "npm-run-all2": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "ultracite": "catalog:"
+  },
+  "engines": {
+    "node": ">=24.15.0 <25"
+  },
+  "packageManager": "pnpm@12.10.1"
+}
