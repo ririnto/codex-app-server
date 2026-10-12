@@ -51,7 +51,8 @@ Stop the owned watch when the assignment finishes, its lease ends, its target is
 
 ## Archive, Then Delete
 
-Confirm pending work has ended, receipts are resolved, required source is preserved, and the owner has released the selected thread.
+Read [Native Thread Retirement](references/lifecycle.md) before cleanup.
+Confirm pending work has ended, receipts are resolved, required source is preserved, and the owner has released every affected thread, including descendants.
 Archive through the native CLI using `codex archive --remote unix:// AUTHORIZED_THREAD_ID`.
 Verify the archived state before considering deletion.
 Permanent deletion requires explicit human authority for the selected scope and confirmation that the transcript is no longer needed.

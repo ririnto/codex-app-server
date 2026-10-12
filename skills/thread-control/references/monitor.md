@@ -6,6 +6,8 @@ In Codex or another host without that tool, run the same executable through the 
 Do not assume a host has Claude Code's Monitor API.
 Resolve `CLAUDE_PLUGIN_ROOT` to this plugin's installed root if the host does not provide that environment variable.
 The plugin root is two directories above this skill directory.
+Replace `${CLAUDE_PLUGIN_ROOT}` in the JSON asset with that resolved root before submitting the Monitor input.
+An arbitrary skill asset is not automatically expanded by the host.
 Do not replace the executable with a custom watcher.
 
 ```sh
@@ -62,6 +64,7 @@ For errors such as `model_not_found`, preserve the native details, inspect the a
 A native `threadStatus` with `systemError` describes that thread's state.
 An `inspection` event with `systemError` describes a failed read and leaves other selected threads running.
 A `transport` event with `systemError` and `threadId: null` describes the monitor connection and ends the process.
+Startup configuration and initialization failures also use `transport` and exit with code 1.
 Server-initiated requests cannot become status or completion events.
 
 Monitor deadlines and cancellation behavior follow the [Claude Code Monitor contract](https://code.claude.com/docs/en/tools-reference#monitor-tool).

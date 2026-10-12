@@ -275,7 +275,7 @@ For an explicit native Monitor tool call, use the packaged executable as its com
 This repository-relative example also runs outside Claude Code:
 
 ```sh
-NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package=./plugins/codex-app-server -- codex-thread-monitor --thread AUTHORIZED_THREAD_ID --timeout-seconds 300
+NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package=. -- codex-thread-monitor --thread AUTHORIZED_THREAD_ID --timeout-seconds 300
 ```
 
 The host's native Monitor tool owns its watch deadline and cancellation.
@@ -326,8 +326,65 @@ The plugin adds no dedicated cleanup tools.
 - `lib/policy.mjs` owns refusal, native CLI, and usage policies.
 - `AGENTS.md` records catalog and policy maintenance requirements.
 - `tests/` verifies the stdio server against a disposable Unix-socket fixture.
-- The Sinon marketplace entry declares Claude Code identity, the package root, and its skill directory.
+- `.claude-plugin/plugin.json` declares Claude Code identity, MCP configuration, skills, and native monitors.
+- `release/` contains repository release-version and issue-form validation.
+- `rules/` contains the Markdown custom lint rule.
 
-Run `pnpm run check:codex-app-server` from the repository to test the runtime.
-The check installs the package's pinned dependencies in a temporary directory and removes that directory afterward.
-It exercises a fixture daemon only.
+## Development
+
+Use the Node.js engine range and pnpm version declared in `package.json`.
+Install locked dependencies and run the aggregate gate.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run check
+claude plugin validate .
+claude plugin validate .claude-plugin/plugin.json
+```
+
+The aggregate gate runs the disposable-socket runtime suite, release-version checks, issue-form validation, validation fixtures, Markdown links, and Ultracite.
+Use `pnpm run check:runtime` for runtime changes and other named `check:*` commands for bounded changes.
+Runtime tests pack the real npm executable and launch it from a disposable directory with an isolated npm cache.
+The fixtures exercise transport, catalogs, queues, monitors, cancellation, and shutdown without mutating a live daemon.
+Public CI runs the aggregate gate on Linux and the runtime suite on macOS.
+Local passing checks remain required when hosted execution is unavailable.
+
+Keep runtime dependencies npm-compatible and development dependencies in the pnpm catalog.
+The npm package retains its compatible package version because `npm pack` requires a name and version.
+Both host manifests own the plugin's calendar release version.
+The Markdown gate checks local links, and its TOML parser override selects the patched release used by Workgraph.
+See [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for repository contracts.
+
+## Version Updates
+
+Keep the same `yyyy.mm.dd.seq` release version in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`.
+Use `01` for the first release of a day and increment the sequence for another release that day.
+The standalone marketplace omits a plugin version so the host manifest owns it.
+The npm package version serves executable packaging rather than the host release identifier.
+
+1. Update both host manifest versions with the changed plugin content.
+2. Run the relevant checks and both native plugin validators.
+3. Inspect the complete diff, confirm version parity, and publish the authorized working branch.
+4. Obtain independent review and merge the ordinary pull request into `main`.
+5. Verify the named upstream `main` branch before updating installed consumers.
+
+The Sinon marketplace follows this repository's `main` branch and preserves the `codex-app-server@sinon` install name.
+For Claude Code, update the marketplace before reinstalling the changed source.
+
+```sh
+claude plugin marketplace update sinon
+claude plugin uninstall codex-app-server@sinon
+claude plugin install codex-app-server@sinon
+```
+
+Start a new host session after reinstalling, or use the host's reload command yourself.
+For Codex, refresh the Sinon marketplace and reinstall the same qualified plugin name.
+
+```sh
+codex plugin marketplace upgrade sinon
+codex plugin remove codex-app-server@sinon
+codex plugin add codex-app-server@sinon
+codex plugin list --marketplace sinon --json
+```
+
+Start a new session and trust the MCP server before checking its loaded version and tools.

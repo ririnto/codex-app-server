@@ -2262,3 +2262,112 @@ test("monitor drops startup notifications after cancellation", async (t) => {
   );
   await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
 });
+
+test("wildcard monitor preserves partial snapshots after a loaded-page refusal", async (t) => {
+  const { connections, requests, socket } = await fixture(
+    t,
+    ({ message, reply, ws }) => {
+      if (message.method === "thread/loaded/list" && message.params.cursor) {
+        ws.send(
+          JSON.stringify({
+            error: { code: -32_000, message: "Page unavailable" },
+            id: message.id
+          })
+        );
+      } else if (message.method === "thread/loaded/list") {
+        reply({ data: ["watched"], nextCursor: "second" });
+      } else if (message.method === "thread/turns/list") {
+        reply({ data: [] });
+      } else {
+        reply({ thread: { status: { type: "idle" } } });
+      }
+    }
+  );
+  const { child, events, exited } = monitor(t, socket, ["--thread", "*"]);
+  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  assert.ok(
+    events.some(
+      (event) => event.event === "inspection" && event.threadId === null
+    )
+  );
+  assert.ok(
+    events.some(
+      (event) => event.status === "idle" && event.threadId === "watched"
+    )
+  );
+  for (const ws of connections) {
+    ws.send(
+      JSON.stringify({
+        method: "thread/status/changed",
+        params: { status: { type: "active" }, threadId: "later" }
+      })
+    );
+  }
+  await t.waitFor(() => assert.equal(events.at(-1)?.threadId, "later"), {
+    timeout: 2000
+  });
+  assert.equal(
+    requests.filter((request) => request.method === "thread/loaded/list")
+      .length,
+    2
+  );
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+});
+
+test("wildcard monitor stops a repeated cursor while retaining discovered threads", async (t) => {
+  const { requests, socket } = await fixture(t, ({ message, reply }) => {
+    if (message.method === "thread/loaded/list") {
+      reply({ data: ["watched"], nextCursor: "repeated" });
+    } else if (message.method === "thread/turns/list") {
+      reply({ data: [] });
+    } else {
+      reply({ thread: { status: { type: "idle" } } });
+    }
+  });
+  const { child, events, exited } = monitor(t, socket, ["--thread", "*"]);
+  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  assert.match(
+    events.find((event) => event.event === "inspection").error,
+    /repeated its cursor/u
+  );
+  assert.equal(
+    requests.filter((request) => request.method === "thread/loaded/list")
+      .length,
+    2
+  );
+  assert.equal(
+    requests.filter((request) => request.method === "thread/read").length,
+    1
+  );
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+});
+
+test("wildcard monitor cancellation closes a pending later page without inspecting or reconnecting", async (t) => {
+  const { connections, requests, socket } = await fixture(
+    t,
+    ({ message, reply }) => {
+      if (message.method === "thread/loaded/list" && !message.params.cursor) {
+        reply({ data: ["watched"], nextCursor: "pending" });
+      }
+    }
+  );
+  const { child, events, exited } = monitor(t, socket, ["--thread", "*"]);
+  await t.waitFor(
+    () =>
+      assert.ok(
+        requests.some((request) => request.params?.cursor === "pending")
+      ),
+    { timeout: 2000 }
+  );
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  assert.deepEqual(events, []);
+  assert.ok(
+    requests.every((request) =>
+      ["initialize", "thread/loaded/list"].includes(request.method)
+    )
+  );
+  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+});
