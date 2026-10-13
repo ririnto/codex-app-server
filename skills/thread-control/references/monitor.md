@@ -66,7 +66,9 @@ Read the tail and receipts before claiming either.
 `turnError` has `status: "failed"`, `threadId`, `turnId`, and the native `error` when available.
 Later idle inspections, terminal completion, and non-retrying error notifications can report new failures.
 The initial latest-turn read only establishes deduplication state.
-Fresh terminal notifications received during initialization remain observable under the configured filters.
+Fresh terminal notifications and status-only active-to-idle changes received during initialization remain observable under the configured filters.
+An in-flight native status snapshot can establish the preceding state when it differs from the first buffered status.
+Native completion timing keeps confirmed pre-launch turns silent during those races.
 Per-thread ingress observations preserve unaffected baselines and correlate startup events buffered behind backpressure.
 Later terminal notifications deduplicate against the silent historical baseline.
 When a thread rejects paginated turn reads as unsupported, the monitor reads that thread's turns through `thread/read` instead and keeps reporting failed turns, while other threads keep the paginated read.
