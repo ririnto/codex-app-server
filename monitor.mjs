@@ -4,13 +4,12 @@ import { parseArgs } from "node:util";
 
 import { watchThreads } from "./lib/monitor.mjs";
 
-const STATUSES = ["idle", "active", "notLoaded", "failed", "systemError"];
+const STATUSES = ["active", "idle", "notLoaded", "failed", "systemError"];
 const DEFAULT_STATUSES = STATUSES.filter((status) => status !== "notLoaded");
 
 const main = async () => {
   const { values } = parseArgs({
     options: {
-      "require-threads": { type: "boolean" },
       status: { multiple: true, type: "string" },
       thread: { multiple: true, type: "string" },
       "timeout-seconds": { type: "string" }
@@ -32,11 +31,6 @@ const main = async () => {
       .map((item) => item.trim())
       .filter(Boolean);
   if (threadIds.length === 0) {
-    if (values["require-threads"]) {
-      throw new Error(
-        "Automatic monitoring requires configured thread selection"
-      );
-    }
     console.error(
       "codex-thread-monitor: set CODEX_APP_SERVER_MONITOR_THREADS or pass --thread to select threads; monitoring is disabled"
     );

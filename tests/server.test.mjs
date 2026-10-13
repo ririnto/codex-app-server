@@ -247,10 +247,12 @@ test("packed executable includes and registers every feature module", async (t) 
   );
   const [packed] = JSON.parse(stdout);
   assert.ok(!packed.files.some((entry) => entry.path === "lib/raw-call.mjs"));
+  assert.ok(
+    !packed.files.some((entry) => entry.path === "monitors/monitors.json")
+  );
   for (const file of [
     "server.mjs",
     "monitor.mjs",
-    "monitors/monitors.json",
     "lib/monitor.mjs",
     "lib/connection.mjs",
     "lib/thread-tools.mjs",
@@ -260,7 +262,6 @@ test("packed executable includes and registers every feature module", async (t) 
     "skills/thread-control/SKILL.md",
     "skills/thread-control/assets/monitor.json",
     "skills/thread-control/references/monitor.md",
-    "skills/thread-monitor/SKILL.md",
     "lib/turn-tools.mjs",
     "lib/thread-admin.mjs",
     "lib/catalog.mjs",
@@ -1874,6 +1875,80 @@ test("packaged monitor watches configured native transitions and classifies term
   await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
 });
 
+test("default monitor excludes notLoaded snapshots while preserving subsequent idle and failure events", async (t) => {
+  let turn = null;
+  const { connections, requests, socket } = await fixture(
+    t,
+    ({ message, reply }) => {
+      reply(
+        message.method === "thread/read"
+          ? { thread: { status: { type: "notLoaded" } } }
+          : { data: turn ? [turn] : [] }
+      );
+    }
+  );
+  const { child, events, exited } = monitor(t, socket, ["--thread", "watched"]);
+  await t.waitFor(
+    () =>
+      assert.ok(requests.some((request) => request.method === "thread/read")),
+    { timeout: 2000 }
+  );
+  assert.deepEqual(events, []);
+  const [owner] = connections;
+  turn = {
+    error: { code: "model_not_found" },
+    id: "after-unload",
+    status: "failed"
+  };
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: { type: "idle" }, threadId: "watched" }
+    })
+  );
+  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  assert.deepEqual(
+    events.map(({ event, previous, status }) => ({ event, previous, status })),
+    [
+      { event: "turnError", previous: "notLoaded", status: "failed" },
+      { event: "threadStatus", previous: "notLoaded", status: "idle" }
+    ]
+  );
+  assert.equal(events[0].error.code, "model_not_found");
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: { type: "notLoaded" }, threadId: "watched" }
+    })
+  );
+  owner.send(
+    JSON.stringify({
+      method: "turn/completed",
+      params: {
+        threadId: "watched",
+        turn: {
+          error: { message: "fixture terminal failure" },
+          id: "later-failure",
+          status: "failed"
+        }
+      }
+    })
+  );
+  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
+  assert.equal(events[2].event, "turnError");
+  assert.equal(events[2].previous, "notLoaded");
+  assert.equal(events[2].status, "failed");
+  assert.equal(events[2].turnId, "later-failure");
+  assert.ok(
+    requests
+      .filter((request) => request.method === "thread/turns/list")
+      .every((request) => request.params.itemsView === "notLoaded")
+  );
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+});
+
 test("monitor status filters and startup deadlines preserve read-only behavior", async (t) => {
   const { connections, requests, socket } = await fixture(t, ({ reply }) =>
     reply({ thread: { status: { type: "idle" }, turns: [] } })
@@ -2144,7 +2219,6 @@ test("monitor validates configuration before connecting and is disabled without 
   const { requests, socket } = await fixture(t, ({ reply }) => reply({}));
   await Promise.all(
     [
-      ["--require-threads"],
       ["--thread", "watched", "--status", "invalid"],
       ["--thread", "watched", "--timeout-seconds", "0"],
       ["--thread", "watched", "--timeout-seconds", "1801"],
@@ -2164,16 +2238,16 @@ test("monitor validates configuration before connecting and is disabled without 
   assert.equal(requests.length, 0);
 });
 
-test("required monitor selection uses configured threads and statuses without widening scope", async (t) => {
+test("explicit notLoaded filtering emits configured snapshots without widening selection", async (t) => {
   const { requests, connections, socket } = await fixture(t, ({ reply }) =>
     reply({ thread: { status: { type: "notLoaded" }, turns: [] } })
   );
   const { events, exited } = monitor(
     t,
     socket,
-    ["--require-threads", "--timeout-seconds", "0.4"],
+    ["--status", "notLoaded", "--timeout-seconds", "0.4"],
     {
-      CODEX_APP_SERVER_MONITOR_STATUSES: "notLoaded,failed,systemError",
+      CODEX_APP_SERVER_MONITOR_STATUSES: "idle",
       CODEX_APP_SERVER_MONITOR_THREADS: " first, second, "
     }
   );
@@ -2196,7 +2270,7 @@ test("required monitor selection uses configured threads and statuses without wi
   await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
 });
 
-test("explicit monitor arguments override automatic selection and filters", async (t) => {
+test("explicit monitor arguments override environment selection and filters", async (t) => {
   const { requests, connections, socket } = await fixture(t, ({ reply }) =>
     reply({ thread: { status: { type: "idle" }, turns: [] } })
   );
@@ -3305,10 +3379,10 @@ test("monitor drops a deferred thread when it leaves daemon memory", async (t) =
     "--status",
     "notLoaded"
   ]);
-  await t.waitFor(() => assert.equal(turnRequests.length, 1), {
+  await t.waitFor(() => assert.equal(events[0]?.status, "idle"), {
     timeout: 2000
   });
-  assert.equal(events[0].status, "idle");
+  assert.equal(turnRequests.length, 1);
   const notify = (type) => {
     for (const ws of connections) {
       ws.send(

@@ -35,16 +35,13 @@ Single-prompt non-interactive runs allow at most ten minutes, so use the smaller
 At a deadline, verify the assignment and lease are still active, then re-arm one owned watch with the same selection.
 Do not overlap watches or create an automatic endless restart loop.
 
-The automatic plugin registration in `monitors/monitors.json` starts only when the separate `thread-monitor` skill is invoked.
-Fresh sessions and ordinary `thread-control` invocations do not start automatic monitoring.
-Configure authorized `CODEX_APP_SERVER_MONITOR_THREADS` before launching Claude Code, then invoke `codex-app-server:thread-monitor` to arm it.
-Use the qualified name through slash commands or the Skill tool for consistent native trigger matching.
+The plugin registers no automatic monitors; start each watch explicitly for its authorized selection.
 Use `'*'` only when monitoring every loaded thread is explicitly authorized.
-Automatic monitoring uses the same executable and lasts until its host stops it.
-Its `--require-threads` flag reports a configuration failure without connecting when no threads are selected.
-Direct executable use without selected threads remains disabled and exits successfully without connecting.
+Repeatable `--thread` arguments override comma-separated `CODEX_APP_SERVER_MONITOR_THREADS` in the watch command's environment.
+Without selected threads, the executable exits successfully without connecting.
 The default statuses are `active,idle,failed,systemError`; add `notLoaded` explicitly only when needed.
-Reuse the automatic monitor when it already covers the assignment instead of starting a duplicate explicit watch.
+Filters apply to current event statuses; previous `notLoaded` states do not suppress idle transitions or terminal failures.
+Transport, inspection, and capability diagnostics remain visible independently of thread status filters.
 
 Stop the owned explicit watch through the host's native task or process cancellation tool when its assignment completes, lease expires, targets are retired, or monitoring is cancelled.
 SIGINT, SIGTERM, and the executable deadline also close its socket and exit successfully.
@@ -79,5 +76,4 @@ Startup configuration and initialization failures also use `transport` and exit 
 Server-initiated requests cannot become status or completion events.
 
 Monitor deadlines and cancellation behavior follow the [Claude Code Monitor contract](https://code.claude.com/docs/en/tools-reference#monitor-tool).
-Automatic skill activation follows the native [plugin monitor trigger](https://code.claude.com/docs/en/plugins/manifest-reference#monitors).
 The packaged workflow, explicit selection, and re-arm ownership rules are local plugin requirements.

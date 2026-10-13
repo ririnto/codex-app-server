@@ -1,6 +1,6 @@
 {
   "name": "codex-app-server",
-  "version": "2026.10.13.03",
+  "version": "2026.10.14.01",
   "description": "MCP tools for inspecting and driving the running Codex app-server.",
   "author": {
     "name": "ririnto"
@@ -10,8 +10,5 @@
   "skills": "./skills",
   "homepage": "https://github.com/ririnto/codex-app-server",
   "repository": "https://github.com/ririnto/codex-app-server",
-  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
-  "experimental": {
-    "monitors": "./monitors/monitors.json"
-  }
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json"
 }

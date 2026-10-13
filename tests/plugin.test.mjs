@@ -32,29 +32,13 @@ test("both hosts resolve the shared conventional skill and their own MCP configu
   assert.ok(codexServer.args.includes("--package=."));
   assert.equal(codexServer.cwd, "./");
   assert.ok(codexServer.args.every((argument) => !argument.includes("${")));
-  const monitors = await readJson(root, claude.experimental.monitors);
-  assert.equal(monitors[0].name, "codex-thread-status");
-  assert.ok(
-    monitors[0].command.endsWith("-- codex-thread-monitor --require-threads")
-  );
-  assert.ok(
-    monitors.every(
-      (monitor) => monitor.when !== undefined && monitor.when !== "always"
-    )
-  );
-  const triggerPrefix = `on-skill-invoke:${claude.name}:`;
-  assert.ok(monitors[0].when.startsWith(triggerPrefix));
-  const skillName = monitors[0].when.slice(triggerPrefix.length);
-  const skill = await readFile(
-    path.join(root, claude.skills, skillName, "SKILL.md"),
-    "utf-8"
-  );
-  const match = /^---\r?\n(?<yaml>[\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(skill);
-  const metadata = yamlParser(match.groups.yaml);
-  assert.equal(metadata.name, skillName);
-  assert.equal(metadata["disable-model-invocation"] ?? false, false);
-  assert.equal(metadata["user-invocable"] ?? true, true);
-  assert.notEqual(skillName, "thread-control");
+  for (const manifest of [claude, codex]) {
+    assert.equal(manifest.monitors, undefined);
+    assert.equal(manifest.experimental?.monitors, undefined);
+  }
+  await assert.rejects(readFile(path.join(root, "monitors/monitors.json")), {
+    code: "ENOENT"
+  });
 });
 
 test("the installed-root skill retains valid metadata, conditional references, and its Monitor asset", async (t) => {
@@ -77,24 +61,21 @@ test("the installed-root skill retains valid metadata, conditional references, a
     )
   );
   await Promise.all(
-    [
-      "SKILL.md",
-      "references/monitor.md",
-      "references/lifecycle.md",
-      "../thread-monitor/SKILL.md"
-    ].map(async (filename) => {
-      const source = path.join(directory, filename);
-      const result = await lint({
-        config: {
-          default: false,
-          "relative-links": { root_path: installed }
-        },
-        customRules: [relativeLinksRule],
-        markdownItFactory: () => markdownIt,
-        strings: { [source]: await readFile(source, "utf-8") }
-      });
-      assert.deepEqual(result[source], [], filename);
-    })
+    ["SKILL.md", "references/monitor.md", "references/lifecycle.md"].map(
+      async (filename) => {
+        const source = path.join(directory, filename);
+        const result = await lint({
+          config: {
+            default: false,
+            "relative-links": { root_path: installed }
+          },
+          customRules: [relativeLinksRule],
+          markdownItFactory: () => markdownIt,
+          strings: { [source]: await readFile(source, "utf-8") }
+        });
+        assert.deepEqual(result[source], [], filename);
+      }
+    )
   );
   const setup = await readJson(directory, "assets/monitor.json");
   assert.equal(setup.timeout_ms, 1_800_000);

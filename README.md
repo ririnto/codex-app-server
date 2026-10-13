@@ -25,8 +25,6 @@ metadata:
       url: https://developers.openai.com/codex/mcp/
     Claude Code Monitor:
       url: https://code.claude.com/docs/en/tools-reference.md#monitor-tool
-    Claude Code plugin monitors:
-      url: https://code.claude.com/docs/en/plugins/manifest-reference.md#monitors
     Codex native status broadcasts:
       version: rust-v0.162.1
       url: https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/app-server/src/thread_status.rs
@@ -243,24 +241,20 @@ Use `codex app-server generate-json-schema` or `codex app-server generate-ts` fo
 
 ## Thread Status Monitor
 
-`monitors/monitors.json` declares the packaged `codex-thread-status` monitor for Claude Code's native Monitor contract.
-Claude Code starts this monitor on the first `codex-app-server:thread-monitor` skill invocation in an eligible interactive session.
-Fresh sessions and ordinary `thread-control` use leave it unarmed.
-The native `on-skill-invoke` trigger preserves opt-in automatic monitoring without registering disabled monitoring as active at startup.
-Use the qualified `codex-app-server:thread-monitor` name through slash commands or the Skill tool for consistent trigger matching.
-The monitor command uses the same local npm package execution as the MCP server.
-It runs the packaged `codex-thread-monitor` executable without an external watch script.
+Start an explicit watch with the packaged `codex-thread-monitor` executable through the host's native Monitor tool or managed background-command facility.
+This plugin registers no automatic monitors, so session startup and skill invocation do not start a watch.
+Use the same local npm package execution as the MCP server, without an external watch script.
 
-Set `CODEX_APP_SERVER_MONITOR_THREADS` to comma-separated authorized thread IDs before starting the host session.
-Invoke the monitoring skill only after configuring an authorized selection before launching Claude Code.
-Its required-selection mode reports a configuration failure without connecting when no threads are selected.
-Direct executable use without selected threads remains disabled and exits successfully without connecting.
+Select authorized threads through repeatable `--thread` arguments or `CODEX_APP_SERVER_MONITOR_THREADS` in the watch command's environment.
+The environment variable accepts comma-separated IDs; explicit arguments take precedence.
+Without selected threads, the executable exits successfully without connecting.
 Use `*` to watch all native status broadcasts, with an initial snapshot covering every loaded-thread page.
 Pagination follows native cursors without a custom page cap, and repeated cursors produce an inspection error.
-Set `CODEX_APP_SERVER_MONITOR_STATUSES` to select statuses, defaulting to `idle,active,failed,systemError`.
+Set `CODEX_APP_SERVER_MONITOR_STATUSES` to select statuses, defaulting to `active,idle,failed,systemError`.
 Include `notLoaded` explicitly when those transitions are needed.
+Filters apply to the current event status, so a previous `notLoaded` state does not hide idle transitions or failures.
+Transport, inspection, and capability diagnostics remain visible independently of thread status filters.
 These environment variables configure the runtime and do not change plugin installation.
-Plugin monitors cannot use `${user_config.*}` under the native host contract.
 
 The monitor emits JSON lines with `event: "threadStatus"`, `threadId`, `status`, and `previous`.
 It filters unrelated threads and repeated statuses.
@@ -290,7 +284,6 @@ NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package=. -- codex-thread-
 ```
 
 The host's native Monitor tool owns its watch deadline and cancellation.
-Once armed through its skill, the packaged plugin monitor runs until its host stops it.
 Outside Claude Code, use the same executable with repeatable `--thread` and `--status` arguments.
 An optional `--timeout-seconds` accepts a positive deadline up to 1800 seconds.
 SIGINT, SIGTERM, and deadlines close the watcher connection and exit successfully, including during initialization.
@@ -323,13 +316,11 @@ The plugin adds no dedicated cleanup tools.
 - `lib/connection.mjs` owns control-socket transport, JSON-RPC requests, and connection cleanup.
 - `monitor.mjs` parses monitor configuration and emits JSON lines.
 - `lib/monitor.mjs` watches native status broadcasts and terminal failures.
-- `monitors/monitors.json` registers the native Claude Code plugin monitor.
 - `lib/thread-tools.mjs` registers thread inspection and steering tools, including turn completion handling.
 - `lib/mcp-tool.mjs` registers the configured MCP tool proxy.
 - `lib/native-session.mjs` owns command and watch connection lifetimes, streaming output, and MCP shutdown cleanup.
 - `lib/session-transport.mjs` extends SDK stdio lifecycle handling to retire native resources and cancel pending stdout drains.
 - `skills/thread-control/` contains the activated workflow, conditional monitor reference, and ready-to-use Monitor input asset.
-- `skills/thread-monitor/` provides the opt-in automatic monitor activation skill.
 - `lib/turn-tools.mjs` owns active-turn guards for steering and interruption.
 - `lib/turn.mjs` shares turn-start and buffered completion handling.
 - `lib/queue.mjs` owns message delivery, receipts, deadlines, and process-local writer serialization.
@@ -339,7 +330,7 @@ The plugin adds no dedicated cleanup tools.
 - `lib/policy.mjs` owns refusal, native CLI, and usage policies.
 - `AGENTS.md` records catalog and policy maintenance requirements.
 - `tests/` verifies the stdio server against a disposable Unix-socket fixture.
-- `.claude-plugin/plugin.json` declares Claude Code identity, MCP configuration, skills, and native monitors.
+- `.claude-plugin/plugin.json` declares Claude Code identity, MCP configuration, and skills.
 - `release/` contains repository release-version and issue-form validation.
 - `rules/` contains the Markdown custom lint rule.
 
