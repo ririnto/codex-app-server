@@ -286,6 +286,8 @@ Terminal turn and error notifications also expose failures when the daemon sends
 Transient errors marked `willRetry` do not produce terminal failures.
 Native events are serialized behind silent baseline reads.
 Notifications arriving during initialization remain observable under the selected filters and cannot be erased by later baselines.
+Per-thread ingress observations preserve unaffected baselines and identify startup notifications already buffered behind backpressure.
+Only startup notification observations can bypass a matching silent terminal baseline.
 Event intake follows stdout backpressure, and a separate read-only inspection socket prevents paused event delivery from blocking inspection responses.
 Cancellation retires both sockets and releases pending stdout drains.
 The monitor never resumes a thread, starts a turn, responds to an approval, or claims a writer.

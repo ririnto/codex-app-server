@@ -2099,7 +2099,7 @@ test("monitor deduplicates snapshot failures across an older startup notificatio
         if (!injected) {
           injected = true;
           const [owner] = targets;
-          for (const id of ["older", "newer"]) {
+          for (const id of ["older", "newer", "older"]) {
             owner.send(
               JSON.stringify({
                 method: "turn/completed",
@@ -3917,4 +3917,167 @@ for (const phase of ["thread/items/list", "thread/read"]) {
     assert.deepEqual(events, []);
     await t.waitFor(() => assert.equal(connections.size, 0));
   });
+}
+
+for (const includeInitial of [false, true]) {
+  for (const turnStatus of ["failed", "completed"]) {
+    test(`monitor never replays historical ${turnStatus} notifications after an idle inspection: ${includeInitial}`, async (t) => {
+      const historical = {
+        id: "historical-terminal",
+        items: [],
+        status: turnStatus
+      };
+      const { connections, requests, socket } = await fixture(
+        t,
+        ({ message, reply }) =>
+          reply(
+            message.method === "thread/read"
+              ? { thread: { name: "Synthetic history", status: "idle" } }
+              : { data: [historical] }
+          )
+      );
+      const { child, events, exited } = monitor(t, socket, [
+        ...(includeInitial ? ["--include-initial"] : []),
+        "--thread",
+        "watched"
+      ]);
+      await t.waitFor(() =>
+        assert.ok(requests.some(({ method }) => method === "thread/read"))
+      );
+      const [owner] = connections;
+      owner.send(
+        JSON.stringify({
+          method: "thread/status/changed",
+          params: { status: "idle", threadId: "watched" }
+        })
+      );
+      owner.send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: { threadId: "watched", turn: historical }
+        })
+      );
+      owner.send(
+        JSON.stringify({
+          method: "thread/status/changed",
+          params: { status: "systemError", threadId: "watched" }
+        })
+      );
+      await t.waitFor(() => assert.equal(events.at(-1)?.status, "systemError"));
+      assert.ok(events.every(({ turnId }) => turnId !== historical.id));
+      owner.send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: {
+            threadId: "watched",
+            turn: { ...historical, id: "genuinely-distinct-terminal" }
+          }
+        })
+      );
+      await t.waitFor(() =>
+        assert.equal(events.at(-1)?.turnId, "genuinely-distinct-terminal")
+      );
+      assert.equal(events.at(-1).finalMessage, null);
+      child.kill("SIGTERM");
+      assert.deepEqual(await exited, [0, null]);
+      await t.waitFor(() => assert.equal(connections.size, 0));
+    });
+  }
+}
+
+for (const includeInitial of [false, true]) {
+  for (const secondRaces of [false, true]) {
+    test(`monitor keeps unaffected baselines and captures buffered cross-thread startup events: ${includeInitial}/${secondRaces}`, async (t) => {
+      let injected = false;
+      const { connections, requests, socket } = await fixture(
+        t,
+        ({ message, reply, connections: targets }) => {
+          if (message.method === "thread/loaded/list") {
+            reply({ data: ["first", "second"] });
+          } else if (message.method === "thread/read") {
+            if (!injected && message.params.threadId === "first") {
+              injected = true;
+              const [owner] = targets;
+              owner.send(
+                JSON.stringify({
+                  method: "thread/status/changed",
+                  params: { status: "active", threadId: "first" }
+                })
+              );
+              if (secondRaces) {
+                owner.send(
+                  JSON.stringify({
+                    method: "thread/status/changed",
+                    params: { status: "active", threadId: "second" }
+                  })
+                );
+              }
+              setTimeout(() => reply({ thread: { status: "active" } }), 30);
+            } else {
+              reply({ thread: { status: "active" } });
+            }
+          } else {
+            reply({ data: [] });
+          }
+        }
+      );
+      const { child, events, exited } = monitor(t, socket, [
+        ...(includeInitial ? ["--include-initial"] : []),
+        "--thread",
+        "*"
+      ]);
+      await t.waitFor(() =>
+        assert.ok(
+          requests.some(
+            ({ method, params }) =>
+              method === "thread/read" && params.threadId === "second"
+          )
+        )
+      );
+      await delay(30);
+      const [owner] = connections;
+      const fresh = { id: "second-fresh-failure", items: [], status: "failed" };
+      owner.send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: { threadId: "second", turn: fresh }
+        })
+      );
+      owner.send(
+        JSON.stringify({
+          method: "thread/status/changed",
+          params: { status: "idle", threadId: "second" }
+        })
+      );
+      await t.waitFor(() => assert.equal(events.at(-1)?.status, "idle"));
+      assert.ok(
+        events.some(
+          ({ turnId, previous }) => turnId === fresh.id && previous === "active"
+        )
+      );
+      if (includeInitial) {
+        assert.equal(
+          events.filter(
+            ({ threadId, status }) =>
+              threadId === "second" && status === "active"
+          ).length,
+          1
+        );
+        if (secondRaces) {
+          assert.deepEqual(
+            events
+              .filter(({ status }) => status === "active")
+              .map(({ threadId }) => threadId),
+            ["first", "second"]
+          );
+        }
+      } else {
+        assert.ok(events.every(({ previous }) => previous !== null));
+      }
+      assert.equal(events.at(-1).previous, "active");
+      child.kill("SIGTERM");
+      assert.deepEqual(await exited, [0, null]);
+      await t.waitFor(() => assert.equal(connections.size, 0));
+    });
+  }
 }
