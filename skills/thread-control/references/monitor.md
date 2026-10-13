@@ -56,6 +56,10 @@ Read the tail and receipts before claiming either.
 
 `turnError` has `status: "failed"`, `threadId`, `turnId`, and the native `error` when available.
 The initial latest-turn inspection, idle inspection, terminal completion, and non-retrying error notifications can report it.
+When a thread rejects paginated turn reads as unsupported, the monitor reads that thread's turns through `thread/read` instead and keeps reporting failed turns, while other threads keep the paginated read.
+A thread whose rollout file is still empty or whose history is not materialized yet has its inspection deferred to its next status change instead of reporting an error.
+At most 128 threads stay deferred; the oldest deferred thread is dropped silently past that cap and its inspection resumes at its next idle transition, and a thread leaving daemon memory is dropped from the deferral immediately.
+A thread using the fallback turn read loads its full turn history on each idle transition, so that read's cost grows with the thread's length.
 Distinct failed turns each emit an event, including consecutive failures with no native status change.
 The same failed turn is not repeated.
 Transient native errors marked `willRetry` are not terminal failures.
@@ -63,6 +67,7 @@ For errors such as `model_not_found`, preserve the native details, inspect the a
 
 A native `threadStatus` with `systemError` describes that thread's state.
 An `inspection` event with `systemError` describes a failed read and leaves other selected threads running.
+A `capability` event with `systemError` and `threadId: null` appears once per run when a thread supports no turn read, and terminal notifications still report failures.
 A `transport` event with `systemError` and `threadId: null` describes the monitor connection and ends the process.
 Startup configuration and initialization failures also use `transport` and exit with code 1.
 Server-initiated requests cannot become status or completion events.
