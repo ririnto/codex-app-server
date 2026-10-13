@@ -248,29 +248,46 @@ Use the same local npm package execution as the MCP server, without an external 
 Select authorized threads through repeatable `--thread` arguments or `CODEX_APP_SERVER_MONITOR_THREADS` in the watch command's environment.
 The environment variable accepts comma-separated IDs; explicit arguments take precedence.
 Without selected threads, the executable exits successfully without connecting.
-Use `*` to watch all native status broadcasts, with an initial snapshot covering every loaded-thread page.
+Use `*` to watch all native status broadcasts, with silent baselines covering every loaded-thread page.
 Pagination follows native cursors without a custom page cap, and repeated cursors produce an inspection error.
 Set `CODEX_APP_SERVER_MONITOR_STATUSES` to select statuses, defaulting to `active,idle,failed,systemError`.
 Include `notLoaded` explicitly when those transitions are needed.
+Events with `previous: null` are excluded by default, including wildcard events for newly observed threads.
+Pass `--include-initial` to include unknown-previous events and diagnostic startup status snapshots.
+This opt-in does not replay historical turn results, and `notLoaded` still requires its independent status selection.
 Filters apply to the current event status, so a previous `notLoaded` state does not hide idle transitions or failures.
 Transport, inspection, and capability diagnostics remain visible independently of thread status filters.
 These environment variables configure the runtime and do not change plugin installation.
 
-The monitor emits JSON lines with `event: "threadStatus"`, `threadId`, `status`, and `previous`.
+The monitor emits JSON lines with `event: "threadStatus"`, `threadId`, `threadName`, `status`, and `previous`.
+Existing statuses and terminal turns establish silent startup baselines and deduplication state.
+Thread names come from native metadata reads at emission, reflecting renames, and absent names use null.
 It filters unrelated threads and repeated statuses.
 Native `thread/status/changed` broadcasts provide idle, active, notLoaded, and systemError.
-Failed is a terminal turn outcome, so idle transitions request one latest turn with item contents omitted to emit a separate `turnError` event when needed.
+Idle transitions inspect the latest turn without item contents to discover subsequent terminal outcomes.
+New failures emit `turnError` with status `failed`.
+New completed or interrupted turns emit `turnCompleted` with status `idle` and their native `turnStatus`.
+The corresponding status filter and unknown-previous filter apply to terminal events.
 When a thread rejects `thread/turns/list` as unsupported, that thread's later turn reads use `thread/read` with turn history instead, still reporting failed turns, while other threads keep the paginated read.
 When both turn reads are refused for a thread, one `capability` `systemError` event with a null thread ID reports the limitation for the whole run.
 A transient rejection for a thread whose rollout file is still empty or whose history is not materialized yet defers its inspection instead of emitting an error, retried on that thread's next status change.
 At most 128 threads stay deferred; the oldest deferred thread is dropped silently past that cap and its inspection resumes at its next idle transition, and a thread leaving daemon memory is dropped from the deferral immediately.
 After a method-not-supported rejection, the fallback reads that thread's full turn history through `thread/read` with turn history on each idle transition, so its read cost grows with the thread's length.
-Each distinct failed turn emits its ID and native error details, including consecutive failures with an unchanged thread status.
-Repeated sightings of the same failed turn remain quiet.
+Distinct terminal turns emit their ID and native error details, including consecutive failures with unchanged thread status.
+Repeated sightings of the same terminal turn remain quiet.
+The startup terminal identity remains remembered through later inspections.
+Each terminal event includes `finalMessage` from that exact turn, using only an agent message marked `final_answer`.
+Missing final answers and unknown phases use null, without substituting progress or another turn's answer.
+Item reads follow every native page for the event's turn ID, falling back to correlated full-history reads when unsupported.
+Final messages are neither cached nor truncated.
+Read failures preserve the event and report `enrichmentError`, with unavailable enrichment values set to null.
 Initial status reads exclude turn history.
 Terminal turn and error notifications also expose failures when the daemon sends them to this connection.
 Transient errors marked `willRetry` do not produce terminal failures.
-Events are serialized behind the initial snapshot, avoiding out-of-order startup notifications.
+Native events are serialized behind silent baseline reads.
+Notifications arriving during initialization remain observable under the selected filters and cannot be erased by later baselines.
+Per-thread ingress observations preserve unaffected baselines and identify startup notifications already buffered behind backpressure.
+Only startup notification observations can bypass a matching silent terminal baseline.
 Event intake follows stdout backpressure, and a separate read-only inspection socket prevents paused event delivery from blocking inspection responses.
 Cancellation retires both sockets and releases pending stdout drains.
 The monitor never resumes a thread, starts a turn, responds to an approval, or claims a writer.
@@ -296,7 +313,7 @@ The command does not reconnect or poll, and the host can start a new watch when 
 
 ## Thread-Control Skill
 
-`skills/thread-control/SKILL.md` activates for authorized thread inspection, steering, monitoring, and retirement.
+The Thread Control skill activates for authorized thread inspection, steering, monitoring, and retirement.
 It requires reading and verifying the tail, explicit `mode: "steer"` for active input, and queueing only after a delivery refusal is understood.
 Lease and writer rules preserve the current owner, and cleanup archives before separately authorized permanent deletion.
 The skill loads its monitor reference and ready-to-use native Monitor input only when monitoring is needed.

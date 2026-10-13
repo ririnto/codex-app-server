@@ -11,12 +11,12 @@ An arbitrary skill asset is not automatically expanded by the host.
 Do not replace the executable with a custom watcher.
 
 ```sh
-NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --status active --status idle --status failed --status systemError --timeout-seconds 1800
+NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --timeout-seconds 1800
 ```
 
 Quote `'*'` so the shell does not expand filenames.
 Replace the wildcard with repeatable `--thread AUTHORIZED_THREAD_ID` arguments when only assigned targets should be watched.
-The wildcard initially inspects every page of `thread/loaded/list`, reads each thread without resuming it, and then receives native broadcasts.
+The wildcard silently baselines every loaded-thread page, reads each thread without resuming it, and receives later native broadcasts.
 Loaded threads do not cover stored threads absent from daemon memory.
 Observation of a wildcard thread grants no authority to steer or delete it.
 
@@ -51,20 +51,40 @@ Inspect the reported transport failure and re-arm only after the authorized conn
 ## Read The Events
 
 Each stdout line is one JSON event.
-`threadStatus` includes `threadId`, `status`, and `previous`, with an initial `previous: null` snapshot and later native state transitions.
+`threadStatus` includes `threadId`, `threadName`, `status`, and `previous`.
+Startup statuses and terminal turns establish silent baselines, so existing idle states and historical failures produce no default events.
+Events with `previous: null` remain excluded by default, including newly observed wildcard threads.
+Use `--include-initial` for unknown-previous events and diagnostic startup status snapshots.
+This opt-in never replays historical turn results.
+The independent `--status notLoaded` opt-in is still required for notLoaded events.
+Native metadata reads supply the current thread name, including renames, or null when absent.
 Unchanged states remain quiet.
 `active` means work is running, `idle` means the thread stopped being active, and `notLoaded` means it left daemon memory.
 An idle event alone does not prove successful completion or delivery.
 Read the tail and receipts before claiming either.
 
 `turnError` has `status: "failed"`, `threadId`, `turnId`, and the native `error` when available.
-The initial latest-turn inspection, idle inspection, terminal completion, and non-retrying error notifications can report it.
+Later idle inspections, terminal completion, and non-retrying error notifications can report new failures.
+The initial latest-turn read only establishes deduplication state.
+Fresh terminal notifications and status-only active-to-idle changes received during initialization remain observable under the configured filters.
+An in-flight native status snapshot can establish the preceding state when it differs from the first buffered status.
+Native completion timing keeps confirmed pre-launch turns silent during those races and in buffered terminal broadcasts, including turns older than the baseline.
+Per-thread ingress observations preserve unaffected baselines and correlate startup events buffered behind backpressure.
+Later terminal notifications deduplicate against the silent historical baseline.
+Suppressed historical payloads do not replace fresh terminal identities before later idle inspections.
 When a thread rejects paginated turn reads as unsupported, the monitor reads that thread's turns through `thread/read` instead and keeps reporting failed turns, while other threads keep the paginated read.
 A thread whose rollout file is still empty or whose history is not materialized yet has its inspection deferred to its next status change instead of reporting an error.
 At most 128 threads stay deferred; the oldest deferred thread is dropped silently past that cap and its inspection resumes at its next idle transition, and a thread leaving daemon memory is dropped from the deferral immediately.
 A thread using the fallback turn read loads its full turn history on each idle transition, so that read's cost grows with the thread's length.
 Distinct failed turns each emit an event, including consecutive failures with no native status change.
 The same failed turn is not repeated.
+New completed or interrupted turns emit `turnCompleted` with status `idle`, native `turnStatus`, and their exact `turnId`.
+Terminal events follow their status filter and the separate unknown-previous filter.
+Each terminal event includes `finalMessage` from the corresponding turn's last agent message marked `final_answer`.
+Missing final answers or unknown phases use null, without substituting progress or an earlier turn's answer.
+Native item reads follow every page for that turn, with correlated full-history fallback when unsupported.
+Messages remain complete, without truncation or retained message caches.
+Enrichment read failures preserve the event and native failure, reporting `enrichmentError` and null for unavailable values.
 Transient native errors marked `willRetry` are not terminal failures.
 For errors such as `model_not_found`, preserve the native details, inspect the affected thread, and report the failed turn before changing the model or retrying under the current assignment.
 
