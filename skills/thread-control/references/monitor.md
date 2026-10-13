@@ -68,7 +68,7 @@ Later idle inspections, terminal completion, and non-retrying error notification
 The initial latest-turn read only establishes deduplication state.
 Fresh terminal notifications and status-only active-to-idle changes received during initialization remain observable under the configured filters.
 An in-flight native status snapshot can establish the preceding state when it differs from the first buffered status.
-Native completion timing keeps confirmed pre-launch turns silent during those races.
+Native completion timing keeps confirmed pre-launch turns silent during those races and in buffered terminal broadcasts, including turns older than the baseline.
 Per-thread ingress observations preserve unaffected baselines and correlate startup events buffered behind backpressure.
 Later terminal notifications deduplicate against the silent historical baseline.
 When a thread rejects paginated turn reads as unsupported, the monitor reads that thread's turns through `thread/read` instead and keeps reporting failed turns, while other threads keep the paginated read.

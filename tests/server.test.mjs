@@ -2160,6 +2160,117 @@ test("monitor deduplicates snapshot failures across an older startup notificatio
   await t.waitFor(() => assert.equal(connections.size, 0));
 });
 
+for (const includeInitial of [false, true]) {
+  for (const outcome of ["failed", "completed"]) {
+    test(`monitor never replays timestamp-qualified historical startup backlogs: ${includeInitial}/${outcome}`, async (t) => {
+      let injected = false;
+      const historical = (id) => ({
+        completedAt: 0,
+        id,
+        items: [],
+        status: outcome
+      });
+      const { connections, requests, socket } = await fixture(
+        t,
+        ({ message, reply, connections: targets }) => {
+          if (message.method === "thread/loaded/list") {
+            reply({ data: ["watched"] });
+          } else if (message.method === "thread/turns/list") {
+            if (!injected) {
+              injected = true;
+              const [owner] = targets;
+              for (const id of [
+                "synthetic-older",
+                "synthetic-baseline",
+                "synthetic-older"
+              ]) {
+                owner.send(
+                  JSON.stringify({
+                    method: "turn/completed",
+                    params: { threadId: "watched", turn: historical(id) }
+                  })
+                );
+              }
+            }
+            reply({ data: [historical("synthetic-baseline")] });
+          } else {
+            reply({ thread: { name: null, status: "idle" } });
+          }
+        }
+      );
+      const { child, events, exited } = monitor(t, socket, [
+        ...(includeInitial ? ["--include-initial"] : []),
+        "--thread",
+        "*"
+      ]);
+      await t.waitFor(() =>
+        assert.ok(requests.some(({ method }) => method === "thread/read"))
+      );
+      const [owner] = connections;
+      owner.send(
+        JSON.stringify({
+          method: "thread/status/changed",
+          params: { status: "active", threadId: "watched" }
+        })
+      );
+      await t.waitFor(() => assert.equal(events.at(-1)?.status, "active"));
+      assert.equal(events.length, includeInitial ? 2 : 1);
+      assert.ok(events.every(({ event }) => event === "threadStatus"));
+      const fresh = {
+        completedAt: Math.floor(Date.now() / 1000),
+        id: "synthetic-post-launch",
+        items:
+          outcome === "completed"
+            ? [
+                {
+                  phase: "final_answer",
+                  text: "Synthetic current final",
+                  type: "agentMessage"
+                }
+              ]
+            : [],
+        status: outcome
+      };
+      for (const turn of [
+        historical("synthetic-older"),
+        historical("synthetic-baseline"),
+        fresh
+      ]) {
+        owner.send(
+          JSON.stringify({
+            method: "turn/completed",
+            params: { threadId: "watched", turn }
+          })
+        );
+      }
+      owner.send(
+        JSON.stringify({
+          method: "thread/status/changed",
+          params: { status: "idle", threadId: "watched" }
+        })
+      );
+      await t.waitFor(() =>
+        assert.deepEqual(
+          { event: events.at(-1)?.event, status: events.at(-1)?.status },
+          { event: "threadStatus", status: "idle" }
+        )
+      );
+      const terminals = events.filter(({ turnId }) => turnId);
+      assert.equal(terminals.length, 1);
+      assert.equal(terminals[0].turnId, fresh.id);
+      assert.equal(terminals[0].previous, "active");
+      assert.equal(terminals[0].threadName, null);
+      assert.equal(
+        terminals[0].finalMessage,
+        outcome === "completed" ? "Synthetic current final" : null
+      );
+      child.kill("SIGTERM");
+      assert.deepEqual(await exited, [0, null]);
+      await t.waitFor(() => assert.equal(connections.size, 0));
+    });
+  }
+}
+
 test("monitor backpressure stops notification work and cancellation releases both read-only sockets", async (t) => {
   const { connections, requests, socket } = await fixture(
     t,
