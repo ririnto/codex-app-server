@@ -71,6 +71,7 @@ An in-flight native status snapshot can establish the preceding state when it di
 Native completion timing keeps confirmed pre-launch turns silent during those races and in buffered terminal broadcasts, including turns older than the baseline.
 Per-thread ingress observations preserve unaffected baselines and correlate startup events buffered behind backpressure.
 Later terminal notifications deduplicate against the silent historical baseline.
+Suppressed historical payloads do not replace fresh terminal identities before later idle inspections.
 When a thread rejects paginated turn reads as unsupported, the monitor reads that thread's turns through `thread/read` instead and keeps reporting failed turns, while other threads keep the paginated read.
 A thread whose rollout file is still empty or whose history is not materialized yet has its inspection deferred to its next status change instead of reporting an error.
 At most 128 threads stay deferred; the oldest deferred thread is dropped silently past that cap and its inspection resumes at its next idle transition, and a thread leaving daemon memory is dropped from the deferral immediately.

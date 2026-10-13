@@ -2170,6 +2170,7 @@ for (const includeInitial of [false, true]) {
         items: [],
         status: outcome
       });
+      let latest = historical("synthetic-baseline");
       const { connections, requests, socket } = await fixture(
         t,
         ({ message, reply, connections: targets }) => {
@@ -2192,7 +2193,7 @@ for (const includeInitial of [false, true]) {
                 );
               }
             }
-            reply({ data: [historical("synthetic-baseline")] });
+            reply({ data: [latest] });
           } else {
             reply({ thread: { name: null, status: "idle" } });
           }
@@ -2243,6 +2244,13 @@ for (const includeInitial of [false, true]) {
           })
         );
       }
+      latest = fresh;
+      owner.send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: { threadId: "watched", turn: historical("synthetic-older") }
+        })
+      );
       owner.send(
         JSON.stringify({
           method: "thread/status/changed",
