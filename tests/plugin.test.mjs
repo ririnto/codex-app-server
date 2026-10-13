@@ -42,14 +42,18 @@ test("both hosts resolve the shared conventional skill and their own MCP configu
       (monitor) => monitor.when !== undefined && monitor.when !== "always"
     )
   );
-  assert.ok(monitors[0].when.startsWith("on-skill-invoke:"));
-  const skillName = monitors[0].when.slice("on-skill-invoke:".length);
+  const triggerPrefix = `on-skill-invoke:${claude.name}:`;
+  assert.ok(monitors[0].when.startsWith(triggerPrefix));
+  const skillName = monitors[0].when.slice(triggerPrefix.length);
   const skill = await readFile(
     path.join(root, claude.skills, skillName, "SKILL.md"),
     "utf-8"
   );
   const match = /^---\r?\n(?<yaml>[\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(skill);
-  assert.equal(yamlParser(match.groups.yaml).name, skillName);
+  const metadata = yamlParser(match.groups.yaml);
+  assert.equal(metadata.name, skillName);
+  assert.equal(metadata["disable-model-invocation"] ?? false, false);
+  assert.equal(metadata["user-invocable"] ?? true, true);
   assert.notEqual(skillName, "thread-control");
 });
 

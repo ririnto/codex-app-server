@@ -3,6 +3,6 @@
     "name": "codex-thread-status",
     "command": "NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package=\"${CLAUDE_PLUGIN_ROOT}\" -- codex-thread-monitor --require-threads",
     "description": "Configured Codex thread status transitions and failures",
-    "when": "on-skill-invoke:thread-monitor"
+    "when": "on-skill-invoke:codex-app-server:thread-monitor"
   }
 ]

@@ -38,6 +38,7 @@ Do not overlap watches or create an automatic endless restart loop.
 The automatic plugin registration in `monitors/monitors.json` starts only when the separate `thread-monitor` skill is invoked.
 Fresh sessions and ordinary `thread-control` invocations do not start automatic monitoring.
 Configure authorized `CODEX_APP_SERVER_MONITOR_THREADS` before launching Claude Code, then invoke `codex-app-server:thread-monitor` to arm it.
+Use the qualified name through slash commands or the Skill tool for consistent native trigger matching.
 Use `'*'` only when monitoring every loaded thread is explicitly authorized.
 Automatic monitoring uses the same executable and lasts until its host stops it.
 Its `--require-threads` flag reports a configuration failure without connecting when no threads are selected.

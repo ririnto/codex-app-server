@@ -247,6 +247,7 @@ Use `codex app-server generate-json-schema` or `codex app-server generate-ts` fo
 Claude Code starts this monitor on the first `codex-app-server:thread-monitor` skill invocation in an eligible interactive session.
 Fresh sessions and ordinary `thread-control` use leave it unarmed.
 The native `on-skill-invoke` trigger preserves opt-in automatic monitoring without registering disabled monitoring as active at startup.
+Use the qualified `codex-app-server:thread-monitor` name through slash commands or the Skill tool for consistent trigger matching.
 The monitor command uses the same local npm package execution as the MCP server.
 It runs the packaged `codex-thread-monitor` executable without an external watch script.
 

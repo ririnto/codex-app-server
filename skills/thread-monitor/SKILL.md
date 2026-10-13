@@ -7,6 +7,7 @@ compatibility: Requires Claude Code's native plugin Monitor support, Node.js 24.
 # Automatic Thread Monitor
 
 Invoke this skill only to arm automatic monitoring for a configured, authorized selection.
+Use the qualified `codex-app-server:thread-monitor` name through the slash command or Skill tool.
 Claude Code starts the packaged monitor on this skill's first invocation, rather than at session startup.
 Ordinary thread inspection and explicit Monitor watches use the separate `thread-control` skill.
 
