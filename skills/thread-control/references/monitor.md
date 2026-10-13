@@ -11,7 +11,7 @@ An arbitrary skill asset is not automatically expanded by the host.
 Do not replace the executable with a custom watcher.
 
 ```sh
-NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --status active --status idle --status notLoaded --status failed --status systemError --timeout-seconds 1800
+NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --status active --status idle --status failed --status systemError --timeout-seconds 1800
 ```
 
 Quote `'*'` so the shell does not expand filenames.
@@ -35,10 +35,13 @@ Single-prompt non-interactive runs allow at most ten minutes, so use the smaller
 At a deadline, verify the assignment and lease are still active, then re-arm one owned watch with the same selection.
 Do not overlap watches or create an automatic endless restart loop.
 
-The automatic plugin registration in `monitors/monitors.json` uses the same executable and lasts until its host stops it.
-Configure `CODEX_APP_SERVER_MONITOR_THREADS='*'` and `CODEX_APP_SERVER_MONITOR_STATUSES='active,idle,notLoaded,failed,systemError'` before launching that host if automatic wildcard monitoring is needed.
-Without selected threads, automatic monitoring is disabled and exits without connecting.
-Reuse the automatic monitor when it already covers the assignment instead of starting a duplicate explicit watch.
+The plugin registers no automatic monitors; start each watch explicitly for its authorized selection.
+Use `'*'` only when monitoring every loaded thread is explicitly authorized.
+Repeatable `--thread` arguments override comma-separated `CODEX_APP_SERVER_MONITOR_THREADS` in the watch command's environment.
+Without selected threads, the executable exits successfully without connecting.
+The default statuses are `active,idle,failed,systemError`; add `notLoaded` explicitly only when needed.
+Filters apply to current event statuses; previous `notLoaded` states do not suppress idle transitions or terminal failures.
+Transport, inspection, and capability diagnostics remain visible independently of thread status filters.
 
 Stop the owned explicit watch through the host's native task or process cancellation tool when its assignment completes, lease expires, targets are retired, or monitoring is cancelled.
 SIGINT, SIGTERM, and the executable deadline also close its socket and exit successfully.

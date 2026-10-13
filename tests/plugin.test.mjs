@@ -32,9 +32,13 @@ test("both hosts resolve the shared conventional skill and their own MCP configu
   assert.ok(codexServer.args.includes("--package=."));
   assert.equal(codexServer.cwd, "./");
   assert.ok(codexServer.args.every((argument) => !argument.includes("${")));
-  const monitors = await readJson(root, claude.experimental.monitors);
-  assert.equal(monitors[0].name, "codex-thread-status");
-  assert.ok(monitors[0].command.endsWith("-- codex-thread-monitor"));
+  for (const manifest of [claude, codex]) {
+    assert.equal(manifest.monitors, undefined);
+    assert.equal(manifest.experimental?.monitors, undefined);
+  }
+  await assert.rejects(readFile(path.join(root, "monitors/monitors.json")), {
+    code: "ENOENT"
+  });
 });
 
 test("the installed-root skill retains valid metadata, conditional references, and its Monitor asset", async (t) => {

@@ -41,7 +41,7 @@ Queues live only in the MCP process, expire after 30 minutes, and do not survive
 
 ## Monitor Active Work
 
-Orchestrators use this plugin's packaged `codex-thread-monitor` and `monitors/monitors.json`, rather than ad-hoc watcher scripts.
+Orchestrators start explicit watches with this plugin's packaged `codex-thread-monitor`, rather than ad-hoc watcher scripts.
 Before starting a watch, read [Monitor Setup](references/monitor.md) and load its ready-to-use [Monitor input](assets/monitor.json).
 Use the packaged npm command with explicit thread selection and status filters.
 The wildcard `--thread '*'` covers every loaded-thread page initially and subsequent status broadcasts.

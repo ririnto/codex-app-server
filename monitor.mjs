@@ -4,7 +4,8 @@ import { parseArgs } from "node:util";
 
 import { watchThreads } from "./lib/monitor.mjs";
 
-const STATUSES = ["idle", "active", "notLoaded", "failed", "systemError"];
+const STATUSES = ["active", "idle", "notLoaded", "failed", "systemError"];
+const DEFAULT_STATUSES = STATUSES.filter((status) => status !== "notLoaded");
 
 const main = async () => {
   const { values } = parseArgs({
@@ -22,7 +23,10 @@ const main = async () => {
       .filter(Boolean);
   const statuses =
     values.status ??
-    (process.env.CODEX_APP_SERVER_MONITOR_STATUSES || STATUSES.join(","))
+    (
+      process.env.CODEX_APP_SERVER_MONITOR_STATUSES ||
+      DEFAULT_STATUSES.join(",")
+    )
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean);
