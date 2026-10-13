@@ -11,7 +11,7 @@ An arbitrary skill asset is not automatically expanded by the host.
 Do not replace the executable with a custom watcher.
 
 ```sh
-NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --status active --status idle --status notLoaded --status failed --status systemError --timeout-seconds 1800
+NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --status active --status idle --status failed --status systemError --timeout-seconds 1800
 ```
 
 Quote `'*'` so the shell does not expand filenames.
@@ -35,9 +35,14 @@ Single-prompt non-interactive runs allow at most ten minutes, so use the smaller
 At a deadline, verify the assignment and lease are still active, then re-arm one owned watch with the same selection.
 Do not overlap watches or create an automatic endless restart loop.
 
-The automatic plugin registration in `monitors/monitors.json` uses the same executable and lasts until its host stops it.
-Configure `CODEX_APP_SERVER_MONITOR_THREADS='*'` and `CODEX_APP_SERVER_MONITOR_STATUSES='active,idle,notLoaded,failed,systemError'` before launching that host if automatic wildcard monitoring is needed.
-Without selected threads, automatic monitoring is disabled and exits without connecting.
+The automatic plugin registration in `monitors/monitors.json` starts only when the separate `thread-monitor` skill is invoked.
+Fresh sessions and ordinary `thread-control` invocations do not start automatic monitoring.
+Configure authorized `CODEX_APP_SERVER_MONITOR_THREADS` before launching Claude Code, then invoke `codex-app-server:thread-monitor` to arm it.
+Use `'*'` only when monitoring every loaded thread is explicitly authorized.
+Automatic monitoring uses the same executable and lasts until its host stops it.
+Its `--require-threads` flag reports a configuration failure without connecting when no threads are selected.
+Direct executable use without selected threads remains disabled and exits successfully without connecting.
+The default statuses are `active,idle,failed,systemError`; add `notLoaded` explicitly only when needed.
 Reuse the automatic monitor when it already covers the assignment instead of starting a duplicate explicit watch.
 
 Stop the owned explicit watch through the host's native task or process cancellation tool when its assignment completes, lease expires, targets are retired, or monitoring is cancelled.
@@ -73,4 +78,5 @@ Startup configuration and initialization failures also use `transport` and exit 
 Server-initiated requests cannot become status or completion events.
 
 Monitor deadlines and cancellation behavior follow the [Claude Code Monitor contract](https://code.claude.com/docs/en/tools-reference#monitor-tool).
+Automatic skill activation follows the native [plugin monitor trigger](https://code.claude.com/docs/en/plugins/manifest-reference#monitors).
 The packaged workflow, explicit selection, and re-arm ownership rules are local plugin requirements.
