@@ -43,7 +43,9 @@ Queues live only in the MCP process, expire after 30 minutes, and do not survive
 
 Orchestrators start explicit watches with this plugin's packaged `codex-thread-monitor`, rather than ad-hoc watcher scripts.
 Before starting a watch, read [Monitor Setup](references/monitor.md) and load its ready-to-use [Monitor input](assets/monitor.json).
-Use the packaged npm command with explicit thread selection and status filters.
+Use the packaged npm command with explicit thread selection and its built-in default filters.
+Startup baselines stay silent, and unknown-previous and notLoaded events require independent explicit opt-ins.
+Events include thread names, and terminal events include the corresponding final agent message when available.
 The wildcard `--thread '*'` covers every loaded-thread page initially and subsequent status broadcasts.
 Re-arm an explicit watch after its 30-minute deadline only while the authorized assignment remains active.
 Use events to decide when a fresh tail is needed, rather than polling thread status.

@@ -10,6 +10,7 @@ const DEFAULT_STATUSES = STATUSES.filter((status) => status !== "notLoaded");
 const main = async () => {
   const { values } = parseArgs({
     options: {
+      "include-initial": { type: "boolean" },
       status: { multiple: true, type: "string" },
       thread: { multiple: true, type: "string" },
       "timeout-seconds": { type: "string" }
@@ -66,6 +67,7 @@ const main = async () => {
           await once(process.stdout, "drain", { signal });
         }
       },
+      includeInitial: values["include-initial"] ?? false,
       signal: stopped.signal,
       statuses,
       threadIds
@@ -85,7 +87,7 @@ try {
   await main();
 } catch (error) {
   process.stdout.write(
-    `${JSON.stringify({ error: error.message, event: "transport", status: "systemError", threadId: null })}\n`
+    `${JSON.stringify({ error: error.message, event: "transport", status: "systemError", threadId: null, threadName: null })}\n`
   );
   process.exitCode = 1;
 }
