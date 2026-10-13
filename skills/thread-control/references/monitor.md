@@ -58,7 +58,7 @@ Read the tail and receipts before claiming either.
 The initial latest-turn inspection, idle inspection, terminal completion, and non-retrying error notifications can report it.
 When a thread rejects paginated turn reads as unsupported, the monitor reads that thread's turns through `thread/read` instead and keeps reporting failed turns, while other threads keep the paginated read.
 A thread whose rollout file is still empty or whose history is not materialized yet has its inspection deferred to its next status change instead of reporting an error.
-At most 128 threads stay deferred; the oldest deferred thread is dropped silently past that cap and its inspection resumes on its next status change, and a thread leaving daemon memory is dropped from the deferral immediately.
+At most 128 threads stay deferred; the oldest deferred thread is dropped silently past that cap and its inspection resumes at its next idle transition, and a thread leaving daemon memory is dropped from the deferral immediately.
 A thread using the fallback turn read loads its full turn history on each idle transition, so that read's cost grows with the thread's length.
 Distinct failed turns each emit an event, including consecutive failures with no native status change.
 The same failed turn is not repeated.

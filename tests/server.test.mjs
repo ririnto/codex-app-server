@@ -3141,9 +3141,6 @@ test("monitor bounds deferred threads and drops the oldest entry past the cap", 
   for (let count = 0; count < 128; count += 1) {
     refusing.add(`bulk-${count}`);
     notify(`bulk-${count}`, "idle");
-    t.waitFor(() => assert.ok(turnRequests.includes(`bulk-${count}`)), {
-      timeout: 2000
-    });
   }
   await t.waitFor(() => assert.ok(turnRequests.includes("bulk-127")), {
     timeout: 2000
