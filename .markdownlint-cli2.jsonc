@@ -1,6 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/DavidAnson/markdownlint-cli2/refs/tags/v0.23.3/schema/markdownlint-cli2-config-schema.json",
   "config": {
+    "table-column-style": {
+      "style": "compact"
+    },
     "line-length": false,
     "no-inline-html": {
       "allowed_elements": ["details", "summary", "kbd", "img", "code"],
