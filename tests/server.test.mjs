@@ -2634,22 +2634,12 @@ test("monitor emits one capability notice when no supported turn read exists", a
     );
   }
   await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
-  assert.deepEqual(
-    {
-      error: events[0].error,
-      event: events[0].event,
-      status: events[0].status,
-      threadId: events[0].threadId
-    },
-    {
-      error:
-        "thread/turns/list is not supported and the thread/read turn fallback was refused",
-      event: "capability",
-      status: "systemError",
-      threadId: null
-    }
-  );
-  assert.equal(events[1].event, "threadStatus");
+  assert.equal(events[0].event, "threadStatus");
+  assert.equal(events[0].status, "idle");
+  assert.equal(events[0].previous, null);
+  assert.equal(events[1].event, "capability");
+  assert.equal(events[1].status, "systemError");
+  assert.equal(events[1].threadId, null);
   for (const ws of connections) {
     ws.send(
       JSON.stringify({
@@ -2716,8 +2706,13 @@ test("monitor retries an empty-rollout thread on its next status change", async 
       ),
     { timeout: 2000 }
   );
-  await delay(50);
-  assert.deepEqual(events, []);
+  await t.waitFor(() => assert.equal(events.length, 1), { timeout: 2000 });
+  assert.deepEqual(events[0], {
+    event: "threadStatus",
+    previous: null,
+    status: "active",
+    threadId: "watched"
+  });
   const notify = () => {
     for (const ws of connections) {
       ws.send(
@@ -2729,13 +2724,8 @@ test("monitor retries an empty-rollout thread on its next status change", async 
     }
   };
   notify();
-  await t.waitFor(() => assert.equal(events.length, 1), { timeout: 2000 });
-  assert.deepEqual(events[0], {
-    event: "threadStatus",
-    previous: null,
-    status: "active",
-    threadId: "watched"
-  });
+  await delay(50);
+  assert.equal(events.length, 1);
   empty = false;
   turn = {
     error: { message: "fixture failure" },
@@ -2748,6 +2738,250 @@ test("monitor retries an empty-rollout thread on its next status change", async 
   assert.equal(events[1].turnId, "initial");
   assert.ok(events.every((event) => event.event !== "inspection"));
   assert.ok(events.every((event) => event.event !== "capability"));
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+});
+
+test("monitor falls back per thread while other threads keep paginated turns", async (t) => {
+  const error = { message: "fixture failure" };
+  const turns = new Map([
+    ["legacy", [{ error, id: "legacy-failure", status: "failed" }]],
+    ["paginated", [{ error, id: "paginated-failure", status: "failed" }]]
+  ]);
+  const { connections, requests, socket } = await fixture(
+    t,
+    ({ message, reply, ws }) => {
+      if (message.method === "thread/turns/list") {
+        if (message.params.threadId === "legacy") {
+          ws.send(
+            JSON.stringify({
+              error: {
+                code: -32_601,
+                message: "paginated_threads is not supported yet"
+              },
+              id: message.id
+            })
+          );
+        } else {
+          reply({ data: turns.get("paginated") });
+        }
+      } else {
+        reply({
+          thread: {
+            status: { type: "idle" },
+            ...(message.params.includeTurns
+              ? { turns: turns.get("legacy") }
+              : {})
+          }
+        });
+      }
+    }
+  );
+  const { child, events, exited } = monitor(t, socket, [
+    "--thread",
+    "legacy",
+    "--thread",
+    "paginated"
+  ]);
+  await t.waitFor(() => assert.equal(events.length, 4), { timeout: 2000 });
+  assert.deepEqual(
+    events
+      .filter((event) => event.event === "threadStatus")
+      .map((event) => [event.threadId, event.status, event.previous]),
+    [
+      ["legacy", "idle", null],
+      ["paginated", "idle", null]
+    ]
+  );
+  assert.deepEqual(
+    events
+      .filter((event) => event.event === "turnError")
+      .map((event) => event.turnId),
+    ["legacy-failure", "paginated-failure"]
+  );
+  assert.ok(events.every((event) => event.event !== "inspection"));
+  assert.ok(events.every((event) => event.event !== "capability"));
+  assert.ok(
+    requests
+      .filter(
+        (request) =>
+          request.method === "thread/read" &&
+          request.params.includeTurns === true
+      )
+      .every((request) => request.params.threadId === "legacy")
+  );
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.method === "thread/turns/list" &&
+        request.params.threadId === "paginated"
+    ).length,
+    1
+  );
+  const [owner] = connections;
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: { type: "idle" }, threadId: "paginated" }
+    })
+  );
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: { type: "idle" }, threadId: "legacy" }
+    })
+  );
+  await delay(50);
+  assert.equal(events.length, 4);
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.method === "thread/turns/list" &&
+        request.params.threadId === "paginated"
+    ).length,
+    2
+  );
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.method === "thread/turns/list" &&
+        request.params.threadId === "legacy"
+    ).length,
+    1
+  );
+  assert.ok(
+    requests
+      .filter(
+        (request) =>
+          request.method === "thread/read" &&
+          request.params.includeTurns === true
+      )
+      .every((request) => request.params.threadId === "legacy")
+  );
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+});
+
+test("monitor retries a not-materialized thread on its next status change", async (t) => {
+  let materialized = false;
+  const turn = {
+    error: { message: "fixture failure" },
+    id: "first",
+    status: "failed"
+  };
+  const { connections, socket } = await fixture(t, ({ message, reply, ws }) => {
+    if (message.method === "thread/turns/list") {
+      if (materialized) {
+        reply({ data: [turn] });
+      } else {
+        ws.send(
+          JSON.stringify({
+            error: {
+              code: -32_600,
+              message:
+                "thread watched is not materialized yet; thread/turns/list is unavailable before first user message"
+            },
+            id: message.id
+          })
+        );
+      }
+    } else {
+      reply({ thread: { status: { type: "active" } } });
+    }
+  });
+  const { child, events, exited } = monitor(t, socket, ["--thread", "watched"]);
+  await t.waitFor(() => assert.equal(events.length, 1), { timeout: 2000 });
+  assert.deepEqual(events[0], {
+    event: "threadStatus",
+    previous: null,
+    status: "active",
+    threadId: "watched"
+  });
+  materialized = true;
+  for (const ws of connections) {
+    ws.send(
+      JSON.stringify({
+        method: "thread/status/changed",
+        params: { status: { type: "idle" }, threadId: "watched" }
+      })
+    );
+  }
+  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
+  assert.equal(events[1].event, "turnError");
+  assert.equal(events[1].turnId, "first");
+  assert.equal(events[2].status, "idle");
+  assert.ok(events.every((event) => event.event !== "inspection"));
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+});
+
+test("monitor keeps startup snapshots after a refused turn read and no redundant retry reads", async (t) => {
+  const { connections, requests, socket } = await fixture(
+    t,
+    ({ message, reply, ws }) => {
+      if (message.method === "thread/turns/list") {
+        ws.send(
+          JSON.stringify({
+            error: {
+              code: -32_601,
+              message: "paginated_threads is not supported yet"
+            },
+            id: message.id
+          })
+        );
+      } else {
+        reply({
+          thread: {
+            status: { type: "idle" },
+            ...(message.params.includeTurns
+              ? { turns: [{ id: "initial", status: "inProgress" }] }
+              : {})
+          }
+        });
+      }
+    }
+  );
+  const { child, events, exited } = monitor(t, socket, ["--thread", "watched"]);
+  await t.waitFor(
+    () =>
+      assert.ok(
+        events.some(
+          (event) =>
+            event.event === "threadStatus" &&
+            event.previous === null &&
+            event.status === "idle"
+        )
+      ),
+    { timeout: 2000 }
+  );
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.method === "thread/read" &&
+        request.params.includeTurns === false
+    ).length,
+    1
+  );
+  for (const ws of connections) {
+    ws.send(
+      JSON.stringify({
+        method: "thread/status/changed",
+        params: { status: { type: "idle" }, threadId: "watched" }
+      })
+    );
+  }
+  await delay(50);
+  assert.equal(
+    requests.filter(
+      (request) =>
+        request.method === "thread/read" &&
+        request.params.includeTurns === false
+    ).length,
+    1
+  );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
   await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });

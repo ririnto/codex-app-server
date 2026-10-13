@@ -260,9 +260,9 @@ The monitor emits JSON lines with `event: "threadStatus"`, `threadId`, `status`,
 It filters unrelated threads and repeated statuses.
 Native `thread/status/changed` broadcasts provide idle, active, notLoaded, and systemError.
 Failed is a terminal turn outcome, so idle transitions request one latest turn with item contents omitted to emit a separate `turnError` event when needed.
-When the daemon rejects `thread/turns/list` as unsupported, later turn reads use `thread/read` with turn history instead, still reporting failed turns.
-When no supported turn read remains, one `capability` `systemError` event with a null thread ID reports the limitation for the whole run.
-A transient rejection for a thread whose rollout file is still empty defers its inspection instead of emitting an error, retried on that thread's next status change.
+When a thread rejects `thread/turns/list` as unsupported, that thread's later turn reads use `thread/read` with turn history instead, still reporting failed turns, while other threads keep the paginated read.
+When both turn reads are refused for a thread, one `capability` `systemError` event with a null thread ID reports the limitation for the whole run.
+A transient rejection for a thread whose rollout file is still empty or whose history is not materialized yet defers its inspection instead of emitting an error, retried on that thread's next status change.
 Each distinct failed turn emits its ID and native error details, including consecutive failures with an unchanged thread status.
 Repeated sightings of the same failed turn remain quiet.
 Initial status reads exclude turn history.
@@ -289,7 +289,7 @@ SIGINT, SIGTERM, and deadlines close the watcher connection and exit successfull
 Socket loss emits a transport event with `status: "systemError"` and `threadId: null`, then exits with code 1.
 Transport errors remain distinct from thread systemError transitions.
 Inspection errors emit an `inspection` systemError event for the affected thread and leave other watches running.
-A missing turn-read capability emits one `capability` systemError event with a null thread ID per run instead of per-thread inspection errors.
+A thread with no supported turn read emits one `capability` systemError event with a null thread ID per run instead of per-thread inspection errors.
 An initial loaded-list error uses a null thread ID and leaves wildcard broadcasts running.
 The command does not reconnect or poll, and the host can start a new watch when needed.
 
