@@ -263,6 +263,8 @@ Failed is a terminal turn outcome, so idle transitions request one latest turn w
 When a thread rejects `thread/turns/list` as unsupported, that thread's later turn reads use `thread/read` with turn history instead, still reporting failed turns, while other threads keep the paginated read.
 When both turn reads are refused for a thread, one `capability` `systemError` event with a null thread ID reports the limitation for the whole run.
 A transient rejection for a thread whose rollout file is still empty or whose history is not materialized yet defers its inspection instead of emitting an error, retried on that thread's next status change.
+At most 128 threads stay deferred; the oldest deferred thread is dropped silently past that cap and its inspection resumes on its next status change, and a thread leaving daemon memory is dropped from the deferral immediately.
+After a method-not-supported rejection, the fallback reads that thread's full turn history through `thread/read` with turn history on each idle transition, so its read cost grows with the thread's length.
 Each distinct failed turn emits its ID and native error details, including consecutive failures with an unchanged thread status.
 Repeated sightings of the same failed turn remain quiet.
 Initial status reads exclude turn history.
