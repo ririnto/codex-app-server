@@ -26,7 +26,9 @@
     "fix": "run-p fix:*",
     "fix:markdownlint-cli2": "markdownlint-cli2 --fix",
     "fix:ultracite": "ultracite fix",
-    "check:plugin-tests": "node --test tests/plugin.test.mjs"
+    "check:plugin-tests": "node --test tests/plugin.test.mjs",
+    "pre-commit": "run-s check",
+    "pre-push": "run-s check"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
