@@ -48,6 +48,7 @@ Use named `check:*` commands for bounded changes whose unaffected proof remains 
 Run `claude plugin validate .` and `claude plugin validate .claude-plugin/plugin.json` after packaged-content changes.
 Keep live-daemon mutations out of tests and use the existing disposable Unix-socket fixtures.
 Check process, transport, listener, timer, queue, and temporary-directory cleanup on changed lifecycle boundaries.
+Make startup, shutdown, cancellation, and retry operations idempotent after partial setup, so repeated cleanup converges without orphaning owned resources.
 Distinguish ACTUAL local checks, REUSED unaffected evidence, and NOT RUN checks with their causes.
 Source and fixture checks do not establish live host acceptance.
 

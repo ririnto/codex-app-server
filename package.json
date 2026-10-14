@@ -28,7 +28,8 @@
     "fix:ultracite": "ultracite fix",
     "check:plugin-tests": "node --test tests/plugin.test.mjs",
     "pre-commit": "run-s check",
-    "pre-push": "run-s check"
+    "pre-push": "run-s check",
+    "prepare": "if [ -e .git ] && [ -x node_modules/.bin/husky ]; then node_modules/.bin/husky; fi"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
@@ -36,6 +37,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "husky": "catalog:",
     "markdownlint": "catalog:",
     "markdownlint-cli2": "catalog:",
     "markdownlint-rule-relative-links": "catalog:",
