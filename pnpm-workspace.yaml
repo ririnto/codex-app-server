@@ -9,4 +9,5 @@ catalog:
   ultracite: ^7.12.4
 
 overrides:
+  katex: ^0.18.2
   markdownlint-cli2>smol-toml: ^1.9.1
