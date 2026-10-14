@@ -256,23 +256,29 @@ Events with `previous: null` are excluded by default, including wildcard events 
 Pass `--include-initial` to include unknown-previous events and diagnostic startup status snapshots.
 Idle and active events with a previous `notLoaded` state are excluded by default, including terminal idle events.
 Pass `--include-previous-not-loaded` to include those events under the selected status filters.
-Current-status, unknown-previous, and previous-notLoaded selections are independent.
+Unnamed threads are excluded by default, including their failed turns and thread systemError events.
+Pass `--include-unnamed` to include them under the selected status and previous-state filters.
+Names must contain a non-whitespace character.
+Name, current-status, unknown-previous, and previous-notLoaded selections are independent.
 Only `--include-initial` exposes diagnostic startup status snapshots, and no opt-in replays historical turn results.
-Fresh `failed` and thread `systemError` events remain visible after `notLoaded`, under their status and unknown-previous filters.
+Fresh `failed` and thread `systemError` events remain visible after `notLoaded`, under their name, status, and unknown-previous filters.
 Loading activity does not establish completion, while native failures can arrive without an observed active state.
 Filtered states remain recorded, preserving genuine `active`-to-`idle` completions after loading.
-Transport, inspection, and capability diagnostics remain visible independently of thread status filters.
+Transport, inspection, and capability diagnostics remain visible independently of thread name and status filters.
 These environment variables configure the runtime and do not change plugin installation.
 
 The monitor emits JSON lines with `event: "threadStatus"`, `threadId`, `threadName`, `status`, and `previous`.
 Existing statuses and terminal turns establish silent startup baselines and deduplication state.
-Thread names come from native metadata reads at emission, reflecting renames, and absent names use null.
+Thread names come from native metadata reads at emission, reflecting renames.
+Unnamed events use null when explicitly included.
+Filtered states and terminal identities remain recorded, so naming a thread later does not replay suppressed activity.
 It filters unrelated threads and repeated statuses.
 Native `thread/status/changed` broadcasts provide idle, active, notLoaded, and systemError.
 Idle transitions inspect the latest turn without item contents to discover subsequent terminal outcomes.
 New failures emit `turnError` with status `failed`.
 New completed or interrupted turns emit `turnCompleted` with status `idle` and their native `turnStatus`.
-Terminal events follow status and previous-state filters, including the failure exception for previous `notLoaded` states.
+Terminal events follow name, status, and previous-state filters, including the failure exception for previous `notLoaded` states.
+Unnamed child failures remain suppressed because they describe excluded threads, rather than the monitor connection.
 When a thread rejects `thread/turns/list` as unsupported, that thread's later turn reads use `thread/read` with turn history instead, still reporting failed turns, while other threads keep the paginated read.
 When both turn reads are refused for a thread, one `capability` `systemError` event with a null thread ID reports the limitation for the whole run.
 A transient rejection for a thread whose rollout file is still empty or whose history is not materialized yet defers its inspection instead of emitting an error, retried on that thread's next status change.
@@ -285,7 +291,11 @@ Each terminal event includes `finalMessage` from that exact turn, using only an 
 Missing final answers and unknown phases use null, without substituting progress or another turn's answer.
 Item reads follow every native page for the event's turn ID, falling back to correlated full-history reads when unsupported.
 Final messages are neither cached nor truncated.
-Read failures preserve the event and report `enrichmentError`, with unavailable enrichment values set to null.
+Final-message read failures preserve selected events and report `enrichmentError`, with unavailable values set to null.
+Failed name reads produce an `inspection` diagnostic by default because the thread name cannot be established.
+It includes `sourceEvent`, the originating `turnId` when available, and `nativeError` when the original event reports a failure.
+With `--include-unnamed`, failed name reads preserve the original event with null `threadName` and `enrichmentError`.
+Suppressed unnamed terminal events do not fetch final messages.
 Initial status reads exclude turn history.
 Terminal turn and error notifications also expose failures when the daemon sends them to this connection.
 Transient errors marked `willRetry` do not produce terminal failures.
