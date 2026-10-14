@@ -251,11 +251,16 @@ Without selected threads, the executable exits successfully without connecting.
 Use `*` to watch all native status broadcasts, with silent baselines covering every loaded-thread page.
 Pagination follows native cursors without a custom page cap, and repeated cursors produce an inspection error.
 Set `CODEX_APP_SERVER_MONITOR_STATUSES` to select statuses, defaulting to `active,idle,failed,systemError`.
-Include `notLoaded` explicitly when those transitions are needed.
+Use `--status notLoaded` or the environment variable to select events whose current status is `notLoaded`.
 Events with `previous: null` are excluded by default, including wildcard events for newly observed threads.
 Pass `--include-initial` to include unknown-previous events and diagnostic startup status snapshots.
-This opt-in does not replay historical turn results, and `notLoaded` still requires its independent status selection.
-Filters apply to the current event status, so a previous `notLoaded` state does not hide idle transitions or failures.
+Idle and active events with a previous `notLoaded` state are excluded by default, including terminal idle events.
+Pass `--include-previous-not-loaded` to include those events under the selected status filters.
+Current-status, unknown-previous, and previous-notLoaded selections are independent.
+Only `--include-initial` exposes diagnostic startup status snapshots, and no opt-in replays historical turn results.
+Fresh `failed` and thread `systemError` events remain visible after `notLoaded`, under their status and unknown-previous filters.
+Loading activity does not establish completion, while native failures can arrive without an observed active state.
+Filtered states remain recorded, preserving genuine `active`-to-`idle` completions after loading.
 Transport, inspection, and capability diagnostics remain visible independently of thread status filters.
 These environment variables configure the runtime and do not change plugin installation.
 
@@ -267,7 +272,7 @@ Native `thread/status/changed` broadcasts provide idle, active, notLoaded, and s
 Idle transitions inspect the latest turn without item contents to discover subsequent terminal outcomes.
 New failures emit `turnError` with status `failed`.
 New completed or interrupted turns emit `turnCompleted` with status `idle` and their native `turnStatus`.
-The corresponding status filter and unknown-previous filter apply to terminal events.
+Terminal events follow status and previous-state filters, including the failure exception for previous `notLoaded` states.
 When a thread rejects `thread/turns/list` as unsupported, that thread's later turn reads use `thread/read` with turn history instead, still reporting failed turns, while other threads keep the paginated read.
 When both turn reads are refused for a thread, one `capability` `systemError` event with a null thread ID reports the limitation for the whole run.
 A transient rejection for a thread whose rollout file is still empty or whose history is not materialized yet defers its inspection instead of emitting an error, retried on that thread's next status change.

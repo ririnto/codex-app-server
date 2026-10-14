@@ -11,7 +11,7 @@ An arbitrary skill asset is not automatically expanded by the host.
 Do not replace the executable with a custom watcher.
 
 ```sh
-NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --timeout-seconds 1800
+NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --status idle --status failed --status systemError --timeout-seconds 1800
 ```
 
 Quote `'*'` so the shell does not expand filenames.
@@ -21,6 +21,7 @@ Loaded threads do not cover stored threads absent from daemon memory.
 Observation of a wildcard thread grants no authority to steer or delete it.
 
 Use repeatable `--status` filters to select relevant events.
+The Monitor input selects idle, failed, and systemError events with the executable's built-in previous-state defaults.
 Include `failed` and `systemError` when waiting for completion so failures cannot be mistaken for quiet success.
 The command uses the same `CODEX_APP_SERVER_SOCKET` or `CODEX_HOME` selection as the MCP server.
 It starts no daemon, acquires no writer, and refuses server-initiated requests.
@@ -40,7 +41,12 @@ Use `'*'` only when monitoring every loaded thread is explicitly authorized.
 Repeatable `--thread` arguments override comma-separated `CODEX_APP_SERVER_MONITOR_THREADS` in the watch command's environment.
 Without selected threads, the executable exits successfully without connecting.
 The default statuses are `active,idle,failed,systemError`; add `notLoaded` explicitly only when needed.
-Filters apply to current event statuses; previous `notLoaded` states do not suppress idle transitions or terminal failures.
+Idle and active events with a previous `notLoaded` state are excluded by default, including terminal idle events.
+Use `--include-previous-not-loaded` to include that activity under the selected status filters.
+Loading activity does not establish completion.
+Filtered states remain recorded, so a subsequent `active`-to-`idle` completion remains observable.
+Fresh failed turns and thread systemError events bypass this previous-notLoaded activity filter because failures can precede observed active states.
+Those failures still follow their status and unknown-previous filters.
 Transport, inspection, and capability diagnostics remain visible independently of thread status filters.
 
 Stop the owned explicit watch through the host's native task or process cancellation tool when its assignment completes, lease expires, targets are retired, or monitoring is cancelled.
@@ -56,7 +62,9 @@ Startup statuses and terminal turns establish silent baselines, so existing idle
 Events with `previous: null` remain excluded by default, including newly observed wildcard threads.
 Use `--include-initial` for unknown-previous events and diagnostic startup status snapshots.
 This opt-in never replays historical turn results.
-The independent `--status notLoaded` opt-in is still required for notLoaded events.
+Use `--status notLoaded` independently to select current notLoaded events.
+Neither previous-state opt-in selects current notLoaded events, and current-status selection does not enable either previous-state category.
+The previous-notLoaded opt-in leaves startup baselines silent.
 Native metadata reads supply the current thread name, including renames, or null when absent.
 Unchanged states remain quiet.
 `active` means work is running, `idle` means the thread stopped being active, and `notLoaded` means it left daemon memory.
@@ -79,7 +87,7 @@ A thread using the fallback turn read loads its full turn history on each idle t
 Distinct failed turns each emit an event, including consecutive failures with no native status change.
 The same failed turn is not repeated.
 New completed or interrupted turns emit `turnCompleted` with status `idle`, native `turnStatus`, and their exact `turnId`.
-Terminal events follow their status filter and the separate unknown-previous filter.
+Terminal events follow status and previous-state filters, including the failure exception for previous notLoaded states.
 Each terminal event includes `finalMessage` from the corresponding turn's last agent message marked `final_answer`.
 Missing final answers or unknown phases use null, without substituting progress or an earlier turn's answer.
 Native item reads follow every page for that turn, with correlated full-history fallback when unsupported.

@@ -1882,7 +1882,7 @@ test("packaged monitor watches configured native transitions and classifies term
   await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
 });
 
-test("default monitor excludes notLoaded snapshots while preserving subsequent idle and failure events", async (t) => {
+test("monitor excludes unloaded activity while preserving subsequent failure events", async (t) => {
   let turn = null;
   const { connections, requests, socket } = await fixture(
     t,
@@ -1917,13 +1917,10 @@ test("default monitor excludes notLoaded snapshots while preserving subsequent i
       params: { status: { type: "idle" }, threadId: "watched" }
     })
   );
-  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  await t.waitFor(() => assert.equal(events.length, 1), { timeout: 2000 });
   assert.deepEqual(
     events.map(({ event, previous, status }) => ({ event, previous, status })),
-    [
-      { event: "turnError", previous: "notLoaded", status: "failed" },
-      { event: "threadStatus", previous: "notLoaded", status: "idle" }
-    ]
+    [{ event: "turnError", previous: "notLoaded", status: "failed" }]
   );
   assert.equal(events[0].error.code, "model_not_found");
   owner.send(
@@ -1945,11 +1942,11 @@ test("default monitor excludes notLoaded snapshots while preserving subsequent i
       }
     })
   );
-  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
-  assert.equal(events[2].event, "turnError");
-  assert.equal(events[2].previous, "notLoaded");
-  assert.equal(events[2].status, "failed");
-  assert.equal(events[2].turnId, "later-failure");
+  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  assert.equal(events[1].event, "turnError");
+  assert.equal(events[1].previous, "notLoaded");
+  assert.equal(events[1].status, "failed");
+  assert.equal(events[1].turnId, "later-failure");
   assert.ok(
     requests
       .filter((request) => request.method === "thread/turns/list")
@@ -2159,6 +2156,250 @@ test("monitor deduplicates snapshot failures across an older startup notificatio
   assert.deepEqual(await exited, [0, null]);
   await t.waitFor(() => assert.equal(connections.size, 0));
 });
+
+for (const includePreviousNotLoaded of [false, true]) {
+  test(`monitor selects unloaded terminal successes separately and retains fresh failures: ${includePreviousNotLoaded}`, async (t) => {
+    let turn = {
+      completedAt: 0,
+      id: "historical",
+      items: [],
+      status: "failed"
+    };
+    let name = null;
+    const { connections, requests, socket } = await fixture(
+      t,
+      ({ message, reply }) => {
+        reply(
+          message.method === "thread/read"
+            ? { thread: { name, status: { type: "notLoaded" } } }
+            : {
+                data:
+                  message.method === "thread/loaded/list" ? ["watched"] : [turn]
+              }
+        );
+      }
+    );
+    const { child, events, exited } = monitor(t, socket, [
+      "--thread",
+      "*",
+      ...(includePreviousNotLoaded ? ["--include-previous-not-loaded"] : [])
+    ]);
+    await t.waitFor(() =>
+      assert.ok(requests.some(({ method }) => method === "thread/read"))
+    );
+    await delay(30);
+    assert.deepEqual(events, []);
+    const [owner] = connections;
+    const terminal = (completed) =>
+      owner.send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: { threadId: "watched", turn: completed }
+        })
+      );
+    terminal({
+      id: "loaded-result",
+      items: [
+        {
+          phase: "final_answer",
+          text: "Synthetic loaded result",
+          type: "agentMessage"
+        }
+      ],
+      status: "completed"
+    });
+    turn = {
+      error: { message: "Synthetic failure" },
+      id: "fresh-failure",
+      items: [
+        {
+          phase: "commentary",
+          text: "Synthetic progress",
+          type: "agentMessage"
+        }
+      ],
+      status: "failed"
+    };
+    terminal(turn);
+    terminal(turn);
+    await t.waitFor(() =>
+      assert.equal(events.length, includePreviousNotLoaded ? 2 : 1)
+    );
+    assert.equal(events.at(-1).event, "turnError");
+    assert.equal(events.at(-1).previous, "notLoaded");
+    assert.equal(events.at(-1).finalMessage, null);
+    assert.equal(events.at(-1).threadName, null);
+    assert.deepEqual(events.at(-1).error, { message: "Synthetic failure" });
+    if (includePreviousNotLoaded) {
+      assert.equal(events[0].event, "turnCompleted");
+      assert.equal(events[0].previous, "notLoaded");
+      assert.equal(events[0].finalMessage, "Synthetic loaded result");
+    }
+    name = "Synthetic renamed session";
+    turn = {
+      error: { message: "Synthetic distinct failure" },
+      id: "distinct-failure",
+      items: [],
+      status: "failed"
+    };
+    terminal(turn);
+    owner.send(
+      JSON.stringify({
+        method: "thread/status/changed",
+        params: { status: { type: "systemError" }, threadId: "watched" }
+      })
+    );
+    await t.waitFor(() =>
+      assert.equal(events.length, includePreviousNotLoaded ? 4 : 3)
+    );
+    assert.equal(events.at(-2).turnId, "distinct-failure");
+    assert.equal(events.at(-2).finalMessage, null);
+    assert.equal(events.at(-2).threadName, name);
+    assert.equal(events.at(-1).status, "systemError");
+    assert.equal(events.at(-1).previous, "notLoaded");
+    assert.equal(events.at(-1).threadName, name);
+    owner.send(
+      JSON.stringify({
+        method: "thread/status/changed",
+        params: { status: { type: "notLoaded" }, threadId: "watched" }
+      })
+    );
+    owner.send(
+      JSON.stringify({
+        method: "thread/status/changed",
+        params: { status: { type: "idle" }, threadId: "watched" }
+      })
+    );
+    await t.waitFor(() =>
+      assert.equal(
+        requests.filter(({ method }) => method === "thread/turns/list").length,
+        2
+      )
+    );
+    await delay(30);
+    assert.equal(
+      events.filter(({ turnId }) => turnId === "fresh-failure").length,
+      1
+    );
+    assert.equal(events.length, includePreviousNotLoaded ? 5 : 3);
+    child.kill("SIGTERM");
+    assert.deepEqual(await exited, [0, null]);
+    await t.waitFor(() => assert.equal(connections.size, 0));
+  });
+}
+
+for (const selection of ["*", "watched"]) {
+  for (const explicitStatuses of [false, true]) {
+    test(`monitor hides unloaded activity but preserves a real completion: ${selection}/${explicitStatuses}`, async (t) => {
+      let turn = { completedAt: 0, id: "historical", status: "failed" };
+      const { connections, requests, socket } = await fixture(
+        t,
+        ({ message, reply }) => {
+          reply(
+            message.method === "thread/read"
+              ? {
+                  thread: {
+                    name: "Synthetic session",
+                    status: { type: "notLoaded" }
+                  }
+                }
+              : {
+                  data:
+                    message.method === "thread/loaded/list"
+                      ? ["watched"]
+                      : [turn]
+                }
+          );
+        }
+      );
+      const { child, events, exited } = monitor(t, socket, [
+        "--thread",
+        selection,
+        ...(explicitStatuses
+          ? [
+              "--status",
+              "idle",
+              "--status",
+              "failed",
+              "--status",
+              "systemError"
+            ]
+          : [])
+      ]);
+      await t.waitFor(() =>
+        assert.ok(requests.some(({ method }) => method === "thread/read"))
+      );
+      await delay(30);
+      assert.deepEqual(events, []);
+      const [owner] = connections;
+      const notify = (type) =>
+        owner.send(
+          JSON.stringify({
+            method: "thread/status/changed",
+            params: { status: { type }, threadId: "watched" }
+          })
+        );
+      notify("idle");
+      await t.waitFor(() =>
+        assert.equal(
+          requests.filter(({ method }) => method === "thread/turns/list")
+            .length,
+          2
+        )
+      );
+      await delay(30);
+      assert.deepEqual(events, []);
+      notify("notLoaded");
+      notify("active");
+      turn = {
+        id: "completed",
+        items: [
+          {
+            phase: "final_answer",
+            text: "Synthetic completed answer",
+            type: "agentMessage"
+          }
+        ],
+        status: "completed"
+      };
+      owner.send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: { threadId: "watched", turn }
+        })
+      );
+      notify("idle");
+      await t.waitFor(() => assert.equal(events.length, 2));
+      assert.deepEqual(
+        events.map(({ event, previous, status, threadName }) => ({
+          event,
+          previous,
+          status,
+          threadName
+        })),
+        [
+          {
+            event: "turnCompleted",
+            previous: "active",
+            status: "idle",
+            threadName: "Synthetic session"
+          },
+          {
+            event: "threadStatus",
+            previous: "active",
+            status: "idle",
+            threadName: "Synthetic session"
+          }
+        ]
+      );
+      assert.equal(events[0].turnId, "completed");
+      assert.equal(events[0].finalMessage, "Synthetic completed answer");
+      child.kill("SIGTERM");
+      assert.deepEqual(await exited, [0, null]);
+      await t.waitFor(() => assert.equal(connections.size, 0));
+    });
+  }
+}
 
 for (const includeInitial of [false, true]) {
   for (const outcome of ["failed", "completed"]) {
@@ -3475,7 +3716,7 @@ test("monitor keeps startup snapshots after a refused turn read and no redundant
       ),
     { timeout: 2000 }
   );
-  assert.equal(statusReads(), 4);
+  assert.equal(statusReads(), 3);
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
   await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
@@ -3604,13 +3845,16 @@ test("monitor drops a deferred thread when it leaves daemon memory", async (t) =
   assert.equal(events[1].status, "notLoaded");
   refused = false;
   notify("active");
-  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
   await delay(100);
+  assert.equal(events.length, 2);
   assert.equal(turnRequests.length, 1);
   notify("idle");
   await t.waitFor(() => assert.equal(turnRequests.length, 2), {
     timeout: 2000
   });
+  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
+  assert.equal(events[2].previous, "active");
+  assert.equal(events[2].status, "idle");
   assert.ok(events.every((event) => event.event !== "inspection"));
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
@@ -3735,62 +3979,84 @@ test("default wildcard monitor silently baselines history and emits named post-l
 
 for (const includeInitial of [false, true]) {
   for (const includeNotLoaded of [false, true]) {
-    test(`wildcard monitor independently opts into null previous and notLoaded: ${includeInitial}/${includeNotLoaded}`, async (t) => {
-      const { connections, requests, socket } = await fixture(
-        t,
-        ({ message, reply }) =>
-          reply(
-            message.method === "thread/read"
-              ? { thread: { name: null } }
-              : { data: [] }
+    for (const includePreviousNotLoaded of [false, true]) {
+      test(`wildcard monitor independently selects all three previous and current categories: ${includeInitial}/${includeNotLoaded}/${includePreviousNotLoaded}`, async (t) => {
+        const { connections, requests, socket } = await fixture(
+          t,
+          ({ message, reply }) =>
+            reply(
+              message.method === "thread/read"
+                ? { thread: { name: null } }
+                : { data: [] }
+            )
+        );
+        const args = ["--thread", "*"];
+        if (includeInitial) {
+          args.push("--include-initial");
+        }
+        if (includePreviousNotLoaded) {
+          args.push("--include-previous-not-loaded");
+        }
+        if (includeNotLoaded) {
+          args.push(
+            "--status",
+            "active",
+            "--status",
+            "idle",
+            "--status",
+            "notLoaded"
+          );
+        }
+        const { child, events, exited } = monitor(t, socket, args);
+        await t.waitFor(() =>
+          assert.ok(
+            requests.some(({ method }) => method === "thread/loaded/list")
           )
-      );
-      const args = ["--thread", "*"];
-      if (includeInitial) {
-        args.push("--include-initial");
-      }
-      if (includeNotLoaded) {
-        args.push(
-          "--status",
+        );
+        const [owner] = connections;
+        for (const type of [
           "active",
-          "--status",
+          "notLoaded",
           "idle",
-          "--status",
-          "notLoaded"
+          "notLoaded",
+          "active",
+          "idle",
+          "idle"
+        ]) {
+          owner.send(
+            JSON.stringify({
+              method: "thread/status/changed",
+              params: { status: { type }, threadId: "new-thread" }
+            })
+          );
+        }
+        const expected = [
+          ...(includeInitial ? [{ previous: null, status: "active" }] : []),
+          ...(includeNotLoaded
+            ? [{ previous: "active", status: "notLoaded" }]
+            : []),
+          ...(includePreviousNotLoaded
+            ? [{ previous: "notLoaded", status: "idle" }]
+            : []),
+          ...(includeNotLoaded
+            ? [{ previous: "idle", status: "notLoaded" }]
+            : []),
+          ...(includePreviousNotLoaded
+            ? [{ previous: "notLoaded", status: "active" }]
+            : []),
+          { previous: "active", status: "idle" }
+        ];
+        await t.waitFor(() => assert.equal(events.length, expected.length));
+        child.kill("SIGTERM");
+        assert.deepEqual(await exited, [0, null]);
+        assert.deepEqual(
+          events.map(({ previous, status }) => ({ previous, status })),
+          expected
         );
-      }
-      const { child, events, exited } = monitor(t, socket, args);
-      await t.waitFor(() =>
-        assert.ok(
-          requests.some(({ method }) => method === "thread/loaded/list")
-        )
-      );
-      const [owner] = connections;
-      for (const type of ["active", "notLoaded", "idle", "idle"]) {
-        owner.send(
-          JSON.stringify({
-            method: "thread/status/changed",
-            params: { status: { type }, threadId: "new-thread" }
-          })
-        );
-      }
-      const expected = [
-        ...(includeInitial ? [{ previous: null, status: "active" }] : []),
-        ...(includeNotLoaded
-          ? [{ previous: "active", status: "notLoaded" }]
-          : []),
-        { previous: "notLoaded", status: "idle" }
-      ];
-      await t.waitFor(() => assert.equal(events.length, expected.length));
-      assert.deepEqual(
-        events.map(({ previous, status }) => ({ previous, status })),
-        expected
-      );
-      assert.ok(events.every(({ threadName }) => threadName === null));
-      child.kill("SIGTERM");
-      assert.deepEqual(await exited, [0, null]);
-      await t.waitFor(() => assert.equal(connections.size, 0));
-    });
+        assert.ok(events.every(({ threadName }) => threadName === null));
+        await t.waitFor(() => assert.equal(connections.size, 0));
+      });
+    }
   }
 }
 

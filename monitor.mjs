@@ -11,6 +11,7 @@ const main = async () => {
   const { values } = parseArgs({
     options: {
       "include-initial": { type: "boolean" },
+      "include-previous-not-loaded": { type: "boolean" },
       status: { multiple: true, type: "string" },
       thread: { multiple: true, type: "string" },
       "timeout-seconds": { type: "string" }
@@ -68,6 +69,7 @@ const main = async () => {
         }
       },
       includeInitial: values["include-initial"] ?? false,
+      includePreviousNotLoaded: values["include-previous-not-loaded"] ?? false,
       signal: stopped.signal,
       statuses,
       threadIds
