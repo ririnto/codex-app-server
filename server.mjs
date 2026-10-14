@@ -88,6 +88,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: [...registry.values()].map((tool) => tool.definition) };
 });
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+  let result;
   try {
     const selected = registry.get(request.params.name);
     if (selected?.method && !refusal(selected.method)) {
@@ -98,10 +99,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       throw new Error(`Unknown tool: ${request.params.name}`);
     }
     extra.signal.throwIfAborted();
-    return await tool.handler(request.params.arguments ?? {}, extra);
+    result = await tool.handler(request.params.arguments ?? {}, extra);
   } catch (error) {
-    return { content: [{ text: error.message, type: "text" }], isError: true };
+    result = {
+      content: [{ text: error.message, type: "text" }],
+      isError: true
+    };
   }
+  return result;
 });
 
 const close = () => {

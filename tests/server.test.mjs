@@ -110,9 +110,9 @@ const fixture = async (context, handler, options = {}) => {
         ws.send(JSON.stringify({ id: message.id, result }));
       if (message.method === "initialize" && !options.failInitialize) {
         reply({});
-        return;
+      } else {
+        handler({ connections, message, reply, ws });
       }
-      handler({ connections, message, reply, ws });
     });
   });
   http.listen(socket);
@@ -399,32 +399,32 @@ test("buffers early completion, matches the turn, and returns structured failure
     message: "Fixture diagnostic"
   };
   const { client } = await fixture(t, ({ message, reply, ws }) => {
-    if (message.method !== "turn/start") {
-      reply(message.method === "thread/read" ? { thread: { turns: [] } } : {});
-      return;
-    }
-    for (const note of [
-      {
-        method: "turn/completed",
-        params: { turn: { id: "other", status: "completed" } }
-      },
-      {
-        method: "item/completed",
-        params: {
-          item: { text: "Fixture final", type: "agentMessage" },
-          turnId: "fixture-turn"
+    if (message.method === "turn/start") {
+      for (const note of [
+        {
+          method: "turn/completed",
+          params: { turn: { id: "other", status: "completed" } }
+        },
+        {
+          method: "item/completed",
+          params: {
+            item: { text: "Fixture final", type: "agentMessage" },
+            turnId: "fixture-turn"
+          }
+        },
+        {
+          method: "turn/completed",
+          params: {
+            turn: { error: diagnostic, id: "fixture-turn", status: "failed" }
+          }
         }
-      },
-      {
-        method: "turn/completed",
-        params: {
-          turn: { error: diagnostic, id: "fixture-turn", status: "failed" }
-        }
+      ]) {
+        ws.send(JSON.stringify(note));
       }
-    ]) {
-      ws.send(JSON.stringify(note));
+      reply({ turn: { id: "fixture-turn" } });
+    } else {
+      reply(message.method === "thread/read" ? { thread: { turns: [] } } : {});
     }
-    reply({ turn: { id: "fixture-turn" } });
   });
   const result = await call(client, "codex_send", {
     text: "Authorized fixture turn",
