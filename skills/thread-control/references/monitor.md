@@ -46,8 +46,12 @@ Use `--include-previous-not-loaded` to include that activity under the selected 
 Loading activity does not establish completion.
 Filtered states remain recorded, so a subsequent `active`-to-`idle` completion remains observable.
 Fresh failed turns and thread systemError events bypass this previous-notLoaded activity filter because failures can precede observed active states.
-Those failures still follow their status and unknown-previous filters.
-Transport, inspection, and capability diagnostics remain visible independently of thread status filters.
+Those failures still follow their name, status, and unknown-previous filters.
+Unnamed threads are excluded by default, including their failed turns and thread systemError events.
+Use `--include-unnamed` to include them under the existing status and previous-state filters.
+Names must contain a non-whitespace character.
+Unnamed child failures describe excluded threads, so they do not bypass name selection.
+Transport, inspection, and capability diagnostics remain visible independently of thread name and status filters.
 
 Stop the owned explicit watch through the host's native task or process cancellation tool when its assignment completes, lease expires, targets are retired, or monitoring is cancelled.
 SIGINT, SIGTERM, and the executable deadline also close its socket and exit successfully.
@@ -63,9 +67,13 @@ Events with `previous: null` remain excluded by default, including newly observe
 Use `--include-initial` for unknown-previous events and diagnostic startup status snapshots.
 This opt-in never replays historical turn results.
 Use `--status notLoaded` independently to select current notLoaded events.
+Name selection, both previous-state categories, and current notLoaded selection require independent opt-ins.
 Neither previous-state opt-in selects current notLoaded events, and current-status selection does not enable either previous-state category.
 The previous-notLoaded opt-in leaves startup baselines silent.
-Native metadata reads supply the current thread name, including renames, or null when absent.
+Native metadata reads supply the current thread name, including renames.
+Explicitly included unnamed events use null when absent.
+Naming a thread later does not replay suppressed statuses or terminal outcomes.
+The ready-to-use Monitor input inherits the executable's named-thread default.
 Unchanged states remain quiet.
 `active` means work is running, `idle` means the thread stopped being active, and `notLoaded` means it left daemon memory.
 An idle event alone does not prove successful completion or delivery.
@@ -87,12 +95,16 @@ A thread using the fallback turn read loads its full turn history on each idle t
 Distinct failed turns each emit an event, including consecutive failures with no native status change.
 The same failed turn is not repeated.
 New completed or interrupted turns emit `turnCompleted` with status `idle`, native `turnStatus`, and their exact `turnId`.
-Terminal events follow status and previous-state filters, including the failure exception for previous notLoaded states.
+Terminal events follow name, status, and previous-state filters, including the failure exception for previous notLoaded states.
 Each terminal event includes `finalMessage` from the corresponding turn's last agent message marked `final_answer`.
 Missing final answers or unknown phases use null, without substituting progress or an earlier turn's answer.
 Native item reads follow every page for that turn, with correlated full-history fallback when unsupported.
 Messages remain complete, without truncation or retained message caches.
-Enrichment read failures preserve the event and native failure, reporting `enrichmentError` and null for unavailable values.
+Final-message read failures preserve selected events and native failures, reporting `enrichmentError` and null for unavailable values.
+Failed name reads produce an `inspection` diagnostic by default because the name cannot be established.
+Its `sourceEvent` identifies the original event, with `turnId` and `nativeError` retained when available.
+With `--include-unnamed`, failed name reads preserve the original event with null `threadName` and `enrichmentError`.
+Suppressed unnamed terminal events do not fetch final messages.
 Transient native errors marked `willRetry` are not terminal failures.
 For errors such as `model_not_found`, preserve the native details, inspect the affected thread, and report the failed turn before changing the model or retrying under the current assignment.
 

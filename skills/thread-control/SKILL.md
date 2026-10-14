@@ -45,11 +45,16 @@ Orchestrators start explicit watches with this plugin's packaged `codex-thread-m
 Before starting a watch, read [Monitor Setup](references/monitor.md) and load its ready-to-use [Monitor input](assets/monitor.json).
 Use the packaged npm command with explicit thread selection and its built-in default filters.
 Startup baselines stay silent.
-Unknown previous states, current notLoaded states, and previous-notLoaded activity require separate explicit opt-ins.
-Keep failed and systemError selected because native failures can arrive without observed active states.
-The Monitor input selects idle, failed, and systemError events using the executable's built-in previous-state defaults.
+Unnamed threads, unknown previous states, current notLoaded states, and previous-notLoaded activity require separate explicit opt-ins.
+Use `--include-unnamed` only when unnamed child activity is needed, including its failures.
+The default requires names containing a non-whitespace character.
+Keep failed and systemError selected for named threads because failures can arrive without observed active states.
+Transport, inspection, and capability diagnostics remain visible regardless of thread name and status filters.
+The Monitor input selects idle, failed, and systemError events using the executable's built-in name and previous-state defaults.
 Loading activity stays quiet, while subsequent active-to-idle completions remain observable.
-Events include thread names, and terminal events include the corresponding final agent message when available.
+Events include current thread names, and terminal events include the corresponding final agent message when available.
+Naming a thread later does not replay suppressed activity.
+Failed name reads report inspection diagnostics with originating failure details instead of claiming an unnamed thread event.
 The wildcard `--thread '*'` covers every loaded-thread page initially and subsequent status broadcasts.
 Re-arm an explicit watch after its 30-minute deadline only while the authorized assignment remains active.
 Use events to decide when a fresh tail is needed, rather than polling thread status.

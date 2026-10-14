@@ -12,6 +12,7 @@ const main = async () => {
     options: {
       "include-initial": { type: "boolean" },
       "include-previous-not-loaded": { type: "boolean" },
+      "include-unnamed": { type: "boolean" },
       status: { multiple: true, type: "string" },
       thread: { multiple: true, type: "string" },
       "timeout-seconds": { type: "string" }
@@ -70,6 +71,7 @@ const main = async () => {
       },
       includeInitial: values["include-initial"] ?? false,
       includePreviousNotLoaded: values["include-previous-not-loaded"] ?? false,
+      includeUnnamed: values["include-unnamed"] ?? false,
       signal: stopped.signal,
       statuses,
       threadIds
