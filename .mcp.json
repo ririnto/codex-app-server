@@ -7,6 +7,11 @@
       "args": [
         "exec",
         "--yes",
+        "--package=husky@^9.1.7",
+        "--",
+        "npm",
+        "exec",
+        "--yes",
         "--install-links",
         "--package=${CLAUDE_PLUGIN_ROOT}",
         "--",

@@ -29,7 +29,7 @@
     "check:plugin-tests": "node --test tests/plugin.test.mjs",
     "pre-commit": "run-s check",
     "pre-push": "run-s check",
-    "prepare": "if [ -e .git ] && [ -x node_modules/.bin/husky ]; then node_modules/.bin/husky; fi"
+    "prepare": "husky"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
