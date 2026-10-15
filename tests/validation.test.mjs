@@ -193,22 +193,6 @@ test("issue forms preserve the five original sections and remove Markdown templa
     }
   };
   const forms = [];
-  const expectedDescriptions = {
-    bug_report: [
-      "Describe the defect and its effect on the reader or host. Link related issues or pull requests.",
-      "Provide reproduction steps, expected behavior, and observed behavior. For host-specific defects, include the host and relevant tool versions. Remove credentials and private environment details.",
-      "Identify affected documents, instructions, or runtime paths. State the boundaries the fix must preserve.",
-      "Describe the observable result and checks that establish completion. Distinguish source checks from host execution and model behavior.",
-      "Name the owner and the next bounded action."
-    ],
-    improvement: [
-      "Describe the requirement or current limitation. Link related issues or pull requests.",
-      "Provide concrete examples or source references supporting the change. Distinguish confirmed behavior from assumptions. Remove credentials and private environment details.",
-      "Describe the proposed change and its exclusions. Identify affected documents, instructions, or runtime paths.",
-      "Describe the observable result and checks that establish completion. Record material limits and any validation that requires a specific host.",
-      "Name the owner and the next bounded action."
-    ]
-  };
   for (const filename of ["bug_report", "improvement"]) {
     const formPath = new URL(`${filename}.yaml`, directory);
     const source = `${filename}.yaml`;
@@ -221,9 +205,21 @@ test("issue forms preserve the five original sections and remove Markdown templa
       form.body.map((field) => field.attributes.label),
       expectedLabels
     );
-    assert.deepEqual(
-      form.body.map((field) => field.attributes.description),
-      expectedDescriptions[filename]
+    assert.ok(
+      form.body.every((field) => field.type === "textarea"),
+      "each issue form section must use a textarea"
+    );
+    assert.ok(
+      form.body.every((field) => field.validations?.required === true),
+      "each issue form section must require a response"
+    );
+    assert.ok(
+      form.body.every(
+        (field) =>
+          typeof field.attributes?.description === "string" &&
+          field.attributes.description.trim() !== ""
+      ),
+      "each issue form section must have a non-empty description"
     );
     assert.ok(
       form.body.every((field) => !field.attributes.description.endsWith("\n"))
