@@ -44,6 +44,7 @@
     "npm-run-all2": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
+    "typescript": "catalog:",
     "ultracite": "catalog:"
   },
   "engines": {
