@@ -125,6 +125,8 @@ The plugin does not send provider WebSocket messages directly.
 `codex_send` queues active-thread text without sending `turn/start` or `turn/steer` to the active turn.
 `codex_steer` defaults to `mode: "queue"` for the same reason.
 A queued result contains `status: "queued"`, a message ID, a thread ID, and a reason.
+Cancelling a send or queued steer before its receipt returns removes that operation's undelivered text, including during queue initialization, resume, and delivery preparation.
+Previously acknowledged messages remain queued, and a turn whose start was already dispatched is not interrupted or retried.
 Queued delivery resumes the thread to receive completion notifications and rechecks its last turn before each fresh `turn/start`.
 Messages deliver in insertion order, waiting for each delivered turn to end before starting the next message.
 Completion notifications are buffered through the delivery request, including completion before its response arrives.
