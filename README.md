@@ -69,22 +69,24 @@ Server-initiated requests, including approval requests, receive a refusal from t
 Claude Code expands `CLAUDE_PLUGIN_ROOT` to the installed plugin root and launches:
 
 ```sh
-NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" --package=husky@^9.1.7 -- codex-app-server
+NODE_USE_SYSTEM_CA=1 npm exec --yes --package=husky@^9.1.7 -- npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-app-server
 ```
 
 Codex resolves `cwd: "./"` relative to the installed plugin root and launches this command there:
 
 ```sh
-NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package=. --package=husky@^9.1.7 -- codex-app-server
+NODE_USE_SYSTEM_CA=1 npm exec --yes --package=husky@^9.1.7 -- npm exec --yes --install-links --package=. -- codex-app-server
 ```
 
 Codex's native manifest loader does not expand Claude path placeholders in MCP arguments.
 `codex_mcp_tool` roots its ephemeral thread at the server's working directory, which is the installed package for Codex.
 Claude Code uses the working directory supplied by its host.
 
-Npm installs a copy of the local package and its declared dependencies into its execution cache.
+The outer npm command supplies Husky while the inner npm command packs the local package.
+The local package's `prepare` lifecycle runs before the inner command installs its execution-cache packages.
+The outer package path keeps that lifecycle working without contributor dependencies.
+The inner npm command installs a copy of the local package and its declared dependencies into its execution cache.
 The `--install-links` option installs file dependencies as packages instead of symlinking them.
-Npm also supplies the catalog-compatible Husky package so the source package's direct `prepare` script works without contributor dependencies.
 Husky only configures repository hooks during preparation and is not a plugin runtime dependency.
 The copied server resolves dependencies there, without requiring repository-local `node_modules` or a preparatory install.
 The standalone npm manifest uses npm-compatible dependency versions and requires no pnpm workspace catalog at runtime.
@@ -314,7 +316,7 @@ For an explicit native Monitor tool call, use the packaged executable as its com
 This repository-relative example also runs outside Claude Code:
 
 ```sh
-NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package=. --package=husky@^9.1.7 -- codex-thread-monitor --thread AUTHORIZED_THREAD_ID --timeout-seconds 300
+NODE_USE_SYSTEM_CA=1 npm exec --yes --package=husky@^9.1.7 -- npm exec --yes --install-links --package=. -- codex-thread-monitor --thread AUTHORIZED_THREAD_ID --timeout-seconds 300
 ```
 
 The host's native Monitor tool owns its watch deadline and cancellation.

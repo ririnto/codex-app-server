@@ -11,7 +11,7 @@ An arbitrary skill asset is not automatically expanded by the host.
 Do not replace the executable with a custom watcher.
 
 ```sh
-NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" --package=husky@^9.1.7 -- codex-thread-monitor --thread '*' --status idle --status failed --status systemError --timeout-seconds 1800
+NODE_USE_SYSTEM_CA=1 npm exec --yes --package=husky@^9.1.7 -- npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --status idle --status failed --status systemError --timeout-seconds 1800
 ```
 
 Quote `'*'` so the shell does not expand filenames.

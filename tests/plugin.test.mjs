@@ -31,15 +31,29 @@ test("both hosts resolve the shared conventional skill and their own MCP configu
   const claudeServer = claudeMcp.mcpServers[claude.name];
   const codexServer = codexMcp.mcpServers[codex.name];
   const huskyPackage = `--package=husky@${workspace.catalog.husky}`;
+  const localPackageArgs = (packagePath, binary) => [
+    "exec",
+    "--yes",
+    huskyPackage,
+    "--",
+    "npm",
+    "exec",
+    "--yes",
+    "--install-links",
+    `--package=${packagePath}`,
+    "--",
+    binary
+  ];
   assert.equal(packageJson.devDependencies.husky, "catalog:");
   assert.equal(packageJson.scripts.prepare, "husky");
   assert.match(workspace.catalog.husky, /^\^\d+\.\d+\.\d+$/u);
   assert.equal(claudeServer.command, "npm");
-  assert.ok(claudeServer.args.includes(`--package=\${CLAUDE_PLUGIN_ROOT}`));
-  assert.ok(claudeServer.args.includes(huskyPackage));
+  assert.deepEqual(
+    claudeServer.args,
+    localPackageArgs(`\${CLAUDE_PLUGIN_ROOT}`, "codex-app-server")
+  );
   assert.equal(codexServer.command, "npm");
-  assert.ok(codexServer.args.includes("--package=."));
-  assert.ok(codexServer.args.includes(huskyPackage));
+  assert.deepEqual(codexServer.args, localPackageArgs(".", "codex-app-server"));
   assert.equal(codexServer.cwd, "./");
   assert.ok(codexServer.args.every((argument) => !argument.includes("${")));
   for (const manifest of [claude, codex]) {
@@ -92,8 +106,11 @@ test("the installed-root skill retains valid metadata, conditional references, a
   const workspace = yamlParser(
     await readFile(path.join(root, "pnpm-workspace.yaml"), "utf-8")
   );
+  const huskyPackage = `--package=husky@${workspace.catalog.husky}`;
   assert.ok(
-    setup.command.includes(`--package=husky@${workspace.catalog.husky}`)
+    setup.command.includes(
+      `npm exec --yes ${huskyPackage} -- npm exec --yes --install-links --package="\${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor`
+    )
   );
   assert.ok(setup.command.includes("--thread '*'"));
   assert.ok(setup.command.endsWith("--timeout-seconds 1800"));
