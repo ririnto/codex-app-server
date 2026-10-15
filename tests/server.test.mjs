@@ -3008,6 +3008,398 @@ test("wildcard monitor cancellation closes a pending later page without inspecti
   await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
 });
 
+for (const phase of ["initialize", "thread/resume", "thread/read"]) {
+  for (const name of ["codex_send", "codex_steer"]) {
+    test(`queued ${name} cancellation during ${phase} prevents late delivery and releases its writer`, async (t) => {
+      let original;
+      let queued;
+      let lateReply;
+      let paused = true;
+      const turns = [{ id: "active", status: "inProgress" }];
+      const delivered = [];
+      const { client, connections, requests } = await fixture(
+        t,
+        ({ message, reply, ws }) => {
+          if (message.method === "initialize") {
+            original ??= ws;
+            if (ws !== original) {
+              queued ??= ws;
+            }
+          }
+          const respond = () => {
+            if (message.method === "thread/read") {
+              reply({ thread: { turns } });
+            } else if (message.method === "turn/start") {
+              delivered.push(message.params.input[0].text);
+              const turn = {
+                id: `fresh-${delivered.length}`,
+                status: "completed"
+              };
+              turns.push(turn);
+              ws.send(
+                JSON.stringify({
+                  method: "turn/completed",
+                  params: { threadId: "watched", turn }
+                })
+              );
+              reply({ turn });
+            } else {
+              reply({});
+            }
+          };
+          if (paused && ws === queued && message.method === phase) {
+            lateReply = respond;
+          } else {
+            respond();
+          }
+        },
+        { failInitialize: true }
+      );
+      const controller = new AbortController();
+      const pending = client.callTool(
+        {
+          arguments: {
+            mode: "queue",
+            text: "cancelled input",
+            thread_id: "watched"
+          },
+          name
+        },
+        undefined,
+        { signal: controller.signal }
+      );
+      const rejected = assert.rejects(pending, /Fixture cancellation/u);
+      await t.waitFor(() => assert.ok(lateReply), { timeout: 2000 });
+      controller.abort(new Error("Fixture cancellation"));
+      await rejected;
+      await call(client, "codex_queue", { thread_id: "watched" });
+      await t.waitFor(() => assert.ok(!connections.has(original)), {
+        timeout: 2000
+      });
+      turns[0].status = "completed";
+      paused = false;
+      lateReply();
+      await t.waitFor(() => assert.equal(connections.size, 0), {
+        timeout: 2000
+      });
+      assert.deepEqual(delivered, []);
+      assert.equal(
+        requests.filter((request) => request.method === "turn/start").length,
+        0
+      );
+      const receipt = await call(client, "codex_queue", {
+        thread_id: "watched"
+      });
+      assert.ok(
+        receipt.value.messages.every(
+          (record) => record.status === "refused" && !("text" in record)
+        )
+      );
+      const fresh = await call(client, "codex_send", {
+        text: "fresh accepted input",
+        thread_id: "watched"
+      });
+      assert.equal(fresh.error, false);
+      assert.equal(fresh.value.status, "started");
+      assert.deepEqual(delivered, ["fresh accepted input"]);
+      await t.waitFor(() => assert.equal(connections.size, 0), {
+        timeout: 2000
+      });
+    });
+  }
+}
+
+for (const name of ["codex_send", "codex_steer"]) {
+  test(`queued ${name} cancellation preserves acknowledged messages and accepts ordered fresh work`, async (t) => {
+    let queueSocket;
+    let initializes = 0;
+    let paused = false;
+    let lateReply;
+    const turns = [{ id: "active", status: "inProgress" }];
+    const delivered = [];
+    const { client, connections, requests } = await fixture(
+      t,
+      ({ message, reply, ws }) => {
+        if (message.method === "initialize") {
+          initializes += 1;
+          if (initializes === 2) {
+            queueSocket = ws;
+          }
+          reply({});
+        } else if (message.method === "thread/read") {
+          if (paused && ws === queueSocket) {
+            lateReply = () => reply({ thread: { turns } });
+          } else {
+            reply({ thread: { turns } });
+          }
+        } else if (message.method === "turn/start") {
+          delivered.push(message.params.input[0].text);
+          const turn = {
+            id: `fresh-${delivered.length}`,
+            status: "completed"
+          };
+          turns.push(turn);
+          ws.send(
+            JSON.stringify({
+              method: "turn/completed",
+              params: { threadId: "watched", turn }
+            })
+          );
+          reply({ turn });
+        } else {
+          reply({});
+        }
+      },
+      { failInitialize: true }
+    );
+    const first = await call(client, "codex_send", {
+      text: "acknowledged first",
+      thread_id: "watched"
+    });
+    assert.equal(first.value.status, "queued");
+    paused = true;
+    const controller = new AbortController();
+    const pending = client.callTool(
+      {
+        arguments: {
+          mode: "queue",
+          text: "cancelled input",
+          thread_id: "watched"
+        },
+        name
+      },
+      undefined,
+      { signal: controller.signal }
+    );
+    const rejected = assert.rejects(pending, /Fixture cancellation/u);
+    await t.waitFor(() => assert.ok(lateReply), { timeout: 2000 });
+    controller.abort(new Error("Fixture cancellation"));
+    await rejected;
+    const cancelled = await call(client, "codex_queue", {
+      thread_id: "watched"
+    });
+    const interrupted = await call(client, "codex_interrupt", {
+      thread_id: "watched"
+    });
+    assert.equal(interrupted.error, false);
+    assert.equal(interrupted.value.status, "interrupted");
+    paused = false;
+    lateReply();
+    await t.waitFor(() => assert.equal(connections.size, 1), {
+      timeout: 2000
+    });
+    assert.equal(cancelled.value.messages[0].id, first.value.id);
+    assert.equal(cancelled.value.messages[0].status, "queued");
+    assert.ok(
+      cancelled.value.messages
+        .slice(1)
+        .every((record) => record.status === "refused" && !("text" in record))
+    );
+    const fresh = await call(client, "codex_send", {
+      text: "fresh accepted input",
+      thread_id: "watched"
+    });
+    assert.equal(fresh.error, false);
+    assert.equal(fresh.value.status, "queued");
+    assert.deepEqual(delivered, []);
+    turns[0].status = "completed";
+    queueSocket.send(
+      JSON.stringify({
+        method: "turn/completed",
+        params: { threadId: "watched", turn: turns[0] }
+      })
+    );
+    await t.waitFor(() => assert.equal(connections.size, 0), {
+      timeout: 2000
+    });
+    assert.deepEqual(delivered, ["acknowledged first", "fresh accepted input"]);
+    assert.equal(
+      requests.filter((request) => request.method === "turn/start").length,
+      2
+    );
+    const receipt = await call(client, "codex_queue", {
+      thread_id: "watched"
+    });
+    assert.deepEqual(
+      receipt.value.messages
+        .filter((record) => record.status !== "refused")
+        .map((record) => ({ id: record.id, status: record.status })),
+      [
+        { id: first.value.id, status: "completed" },
+        { id: fresh.value.id, status: "completed" }
+      ]
+    );
+  });
+}
+
+test("enqueue cancellation preserves a completion wake for acknowledged messages", async (t) => {
+  let queueSocket;
+  let initializes = 0;
+  let paused = false;
+  let lateReply;
+  const turns = [{ id: "active", status: "inProgress" }];
+  const delivered = [];
+  const { client, connections } = await fixture(
+    t,
+    ({ message, reply, ws }) => {
+      if (message.method === "initialize") {
+        initializes += 1;
+        if (initializes === 2) {
+          queueSocket = ws;
+        }
+        reply({});
+      } else if (message.method === "thread/read") {
+        if (paused && ws === queueSocket) {
+          lateReply = () => reply({ thread: { turns } });
+        } else {
+          reply({ thread: { turns } });
+        }
+      } else if (message.method === "turn/start") {
+        delivered.push(message.params.input[0].text);
+        const turn = { id: "fresh", status: "completed" };
+        turns.push(turn);
+        ws.send(
+          JSON.stringify({
+            method: "turn/completed",
+            params: { threadId: "watched", turn }
+          })
+        );
+        reply({ turn });
+      } else {
+        reply({});
+      }
+    },
+    { failInitialize: true }
+  );
+  const first = await call(client, "codex_send", {
+    text: "acknowledged first",
+    thread_id: "watched"
+  });
+  assert.equal(first.value.status, "queued");
+  paused = true;
+  const controller = new AbortController();
+  const pending = client.callTool(
+    {
+      arguments: { text: "cancelled input", thread_id: "watched" },
+      name: "codex_send"
+    },
+    undefined,
+    { signal: controller.signal }
+  );
+  const rejected = assert.rejects(pending, /Fixture cancellation/u);
+  await t.waitFor(() => assert.ok(lateReply), { timeout: 2000 });
+  turns[0].status = "completed";
+  queueSocket.send(
+    JSON.stringify({
+      method: "turn/completed",
+      params: { threadId: "watched", turn: turns[0] }
+    })
+  );
+  const pong = once(queueSocket, "pong");
+  queueSocket.ping();
+  await pong;
+  paused = false;
+  controller.abort(new Error("Fixture cancellation"));
+  await rejected;
+  await call(client, "codex_queue", { thread_id: "watched" });
+  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  assert.deepEqual(delivered, ["acknowledged first"]);
+  lateReply();
+  const receipt = await call(client, "codex_queue", { thread_id: "watched" });
+  assert.deepEqual(
+    receipt.value.messages.map(({ id, status }) => ({ id, status })),
+    [{ id: first.value.id, status: "completed" }]
+  );
+});
+
+for (const name of ["codex_send", "codex_steer"]) {
+  test(`queued ${name} cancellation preserves an already-started turn without interruption or retry`, async (t) => {
+    let queueSocket;
+    let initializes = 0;
+    let lateReply;
+    const turns = [{ id: "original", status: "inProgress" }];
+    const delivered = [];
+    const { client, connections, requests } = await fixture(
+      t,
+      ({ message, reply, ws }) => {
+        if (message.method === "initialize") {
+          initializes += 1;
+          if (initializes === 2) {
+            queueSocket = ws;
+          }
+          reply({});
+        } else if (message.method === "thread/read") {
+          reply({ thread: { turns } });
+        } else if (message.method === "thread/resume") {
+          turns[0].status = "completed";
+          reply({});
+        } else if (message.method === "turn/start") {
+          delivered.push(message.params.input[0].text);
+          const turn = { id: "started", status: "inProgress" };
+          turns.push(turn);
+          lateReply = () => reply({ turn });
+        } else {
+          reply({});
+        }
+      },
+      { failInitialize: true }
+    );
+    const controller = new AbortController();
+    const pending = client.callTool(
+      {
+        arguments: {
+          mode: "queue",
+          text: "already started input",
+          thread_id: "watched"
+        },
+        name
+      },
+      undefined,
+      { signal: controller.signal }
+    );
+    const rejected = assert.rejects(pending, /Fixture cancellation/u);
+    await t.waitFor(() => assert.ok(lateReply), { timeout: 2000 });
+    controller.abort(new Error("Fixture cancellation"));
+    await rejected;
+    await call(client, "codex_queue", { thread_id: "watched" });
+    lateReply();
+    await t.waitFor(
+      async () => {
+        const receipt = await call(client, "codex_queue", {
+          thread_id: "watched"
+        });
+        assert.equal(receipt.value.messages.length, 1);
+        assert.equal(receipt.value.messages[0].status, "started");
+        assert.equal(receipt.value.messages[0].turnId, "started");
+      },
+      { timeout: 2000 }
+    );
+    assert.ok(connections.has(queueSocket));
+    assert.deepEqual(delivered, ["already started input"]);
+    assert.ok(!requests.some((request) => request.method === "turn/interrupt"));
+    turns[1].status = "completed";
+    queueSocket.send(
+      JSON.stringify({
+        method: "turn/completed",
+        params: { threadId: "watched", turn: turns[1] }
+      })
+    );
+    await t.waitFor(() => assert.equal(connections.size, 0), {
+      timeout: 2000
+    });
+    const receipt = await call(client, "codex_queue", {
+      thread_id: "watched"
+    });
+    assert.equal(receipt.value.messages[0].status, "completed");
+    assert.deepEqual(delivered, ["already started input"]);
+    assert.equal(
+      requests.filter((request) => request.method === "turn/start").length,
+      1
+    );
+    assert.ok(!requests.some((request) => request.method === "turn/interrupt"));
+  });
+}
+
 for (const phase of ["initialize", "thread/read"]) {
   for (const name of ["codex_send", "codex_steer", "codex_interrupt"]) {
     test(`curated ${name} cancellation during ${phase} prevents writes and releases its writer`, async (t) => {
