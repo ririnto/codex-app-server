@@ -1,4 +1,4 @@
 {
-  "command": "NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package=\"${CLAUDE_PLUGIN_ROOT}\" -- codex-thread-monitor --thread '*' --status idle --status failed --status systemError --timeout-seconds 1800",
+  "command": "NODE_USE_SYSTEM_CA=1 npm exec --yes --install-links --package=\"${CLAUDE_PLUGIN_ROOT}\" --package=husky@^9.1.7 -- codex-thread-monitor --thread '*' --status idle --status failed --status systemError --timeout-seconds 1800",
   "timeout_ms": 1800000
 }

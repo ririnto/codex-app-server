@@ -22,19 +22,28 @@ Use the Node.js engine range and pnpm version declared in `package.json`.
 Run `pnpm install` after dependency changes and keep the lockfile consistent.
 Keep runtime dependencies npm-compatible because installed plugins use local `npm exec` packaging.
 Store shared development dependency versions in `pnpm-workspace.yaml` and reference its catalogs.
+Use caret `^x.y.z` ranges in pnpm catalogs and never pin versions with a commit hash.
 Keep runtime dependency versions in `package.json` so packaging needs no workspace configuration.
+Prefer maintained LTS dependency lines and use stable releases when no LTS line exists.
 Resolve packaged resources from the executing module rather than the caller's working directory.
-Match the existing Ultracite, Oxlint, Oxfmt, and Markdownlint configuration.
+Use Ultracite as the only caller of Oxlint and Oxfmt.
+Keep `.markdownlint-cli2.jsonc` set to `gitignore: true` and compact table-column style.
+Sort configuration object keys and preserve array order and values.
+Keep explicit Markdownlint ignores empty unless a concrete file cannot be covered by `.gitignore`.
+Declare Husky as a catalog-backed development dependency, set `prepare` to `husky`, and keep real hooks under `.husky/`.
+Have the hooks invoke the package's pre-commit and pre-push scripts.
 Do not disable rules, add suppressions, or weaken configuration to make checks pass.
 Use multiline JSDoc for exported declarations and public class members.
 Keep function bodies free of explanatory inline comments and blank lines.
 Prefer immutable bindings and preserve exception timing, async ordering, and cleanup semantics.
+Prefer condition inversion over mid-function exits when behavior stays intact, subject to lint and formatter output.
 Use `.yaml` unless the consuming platform requires another filename.
 
 ## Documentation
 
 Write repository guidance and agent-to-agent communication in concise English.
 Write complete prose sentences, one sentence per source line, and separate paragraphs with blank lines.
+Do not join sentences with semicolons or use em dashes.
 Preserve code, metadata, licenses, exact quotations, and required table syntax.
 Keep conditions and exceptions beside their governed action.
 Use ASCII diagrams and verify local Markdown links.
@@ -89,6 +98,7 @@ Keep thread archive, unarchive, and delete on the native CLI.
 Server-initiated approvals remain refused by `lib/connection.mjs`.
 
 Extend the existing disposable-socket tests for schema conversion, filtering, fallback, and guarded behavior.
+Test issue-form structure and behavior without pinning exact descriptive prose.
 Do not test mutations against the live daemon.
 
 Keep active-thread sends on the process-local queue unless supported steering is explicitly selected.

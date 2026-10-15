@@ -24,12 +24,22 @@ test("both hosts resolve the shared conventional skill and their own MCP configu
   assert.equal(codex.skills, claude.skills);
   const claudeMcp = await readJson(root, claude.mcpServers);
   const codexMcp = await readJson(root, codex.mcpServers);
+  const packageJson = await readJson(root, "package.json");
+  const workspace = yamlParser(
+    await readFile(path.join(root, "pnpm-workspace.yaml"), "utf-8")
+  );
   const claudeServer = claudeMcp.mcpServers[claude.name];
   const codexServer = codexMcp.mcpServers[codex.name];
+  const huskyPackage = `--package=husky@${workspace.catalog.husky}`;
+  assert.equal(packageJson.devDependencies.husky, "catalog:");
+  assert.equal(packageJson.scripts.prepare, "husky");
+  assert.match(workspace.catalog.husky, /^\^\d+\.\d+\.\d+$/u);
   assert.equal(claudeServer.command, "npm");
   assert.ok(claudeServer.args.includes(`--package=\${CLAUDE_PLUGIN_ROOT}`));
+  assert.ok(claudeServer.args.includes(huskyPackage));
   assert.equal(codexServer.command, "npm");
   assert.ok(codexServer.args.includes("--package=."));
+  assert.ok(codexServer.args.includes(huskyPackage));
   assert.equal(codexServer.cwd, "./");
   assert.ok(codexServer.args.every((argument) => !argument.includes("${")));
   for (const manifest of [claude, codex]) {
@@ -79,6 +89,12 @@ test("the installed-root skill retains valid metadata, conditional references, a
   );
   const setup = await readJson(directory, "assets/monitor.json");
   assert.equal(setup.timeout_ms, 1_800_000);
+  const workspace = yamlParser(
+    await readFile(path.join(root, "pnpm-workspace.yaml"), "utf-8")
+  );
+  assert.ok(
+    setup.command.includes(`--package=husky@${workspace.catalog.husky}`)
+  );
   assert.ok(setup.command.includes("--thread '*'"));
   assert.ok(setup.command.endsWith("--timeout-seconds 1800"));
 });
