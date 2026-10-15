@@ -18,6 +18,7 @@
   "scripts": {
     "check": "run-p check:*",
     "check:runtime": "node --test tests/server.test.mjs",
+    "check:markdown-rules": "node --test tests/markdown-rules.test.mjs",
     "check:issue-forms": "node release/check-issue-forms.mjs",
     "check:plugin-version": "node release/check-plugin-version.mjs",
     "check:validation-tests": "node --test tests/validation.test.mjs",
@@ -34,7 +35,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",
     "ws": "^8.22.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "husky": "catalog:",
