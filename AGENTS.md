@@ -27,6 +27,12 @@ Keep runtime dependency versions in `package.json` so packaging needs no workspa
 Prefer maintained LTS dependency lines and use stable releases when no LTS line exists.
 Resolve packaged resources from the executing module rather than the caller's working directory.
 Use Ultracite as the only caller of Oxlint and Oxfmt.
+Use named regex capture groups and access full matches or subgroups by name.
+Use named regex backreferences and replacement references instead of positional references.
+Prefer an existing parser or literal operation when it expresses the requirement more clearly.
+Inline single-use variables and logic when lint, evaluation order, side effects, and cleanup semantics remain unchanged.
+Do not create hypothetical production helpers, expose internals, or add test seams for test convenience.
+Test references do not establish production reuse.
 Keep `.markdownlint-cli2.jsonc` set to `gitignore: true` and compact table-column style.
 Sort configuration object keys and preserve array order and values.
 Keep explicit Markdownlint ignores empty unless a concrete file cannot be covered by `.gitignore`.

@@ -391,6 +391,10 @@ The fixtures exercise transport, catalogs, queues, monitors, cancellation, and s
 Public CI runs the aggregate gate on Linux and the runtime suite on macOS.
 Local passing checks remain required when hosted execution is unavailable.
 
+Oxfmt excludes `**/*.md` files, and Markdownlint owns Markdown checks.
+Keep the `trailingComma: "none"` option in `oxfmt.config.ts`.
+The `npm-run-all2` package provides the existing `run-p` and `run-s` script commands.
+
 Keep runtime dependencies npm-compatible and development dependencies in the pnpm catalog.
 The npm package retains its compatible package version because `npm pack` requires a name and version.
 Both host manifests own the plugin's calendar release version.
