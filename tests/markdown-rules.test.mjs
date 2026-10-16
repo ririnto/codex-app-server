@@ -58,6 +58,24 @@ test("the diagram rule reports the first violation on each fenced code line", ()
   );
 });
 
+test("the diagram rule keeps the first UTF-16 column on CRLF lines", () => {
+  assert.deepEqual(
+    violations("\u{1F600}\t\u251C\u2500\r\nx\t\u2514\u2500\r\n"),
+    [
+      {
+        lineNumber: 1,
+        range: [4, 1],
+        ruleNames: ["docs/no-box-drawing"]
+      },
+      {
+        lineNumber: 2,
+        range: [3, 1],
+        ruleNames: ["docs/no-box-drawing"]
+      }
+    ]
+  );
+});
+
 test("the repository CLI configuration loads and enforces the diagram rule", async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), "codex-markdown-rule-"));
   t.after(() => rm(directory, { force: true, recursive: true }));
