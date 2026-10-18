@@ -16,10 +16,7 @@ import relativeLinksRule, {
 } from "markdownlint-rule-relative-links";
 import { lint } from "markdownlint/promise";
 
-import {
-  validateIssueFormContent,
-  validateIssueForms
-} from "../release/check-issue-forms.mjs";
+import { validateIssueForms } from "../release/check-issue-forms.mjs";
 import { validatePluginVersions } from "../release/check-plugin-version.mjs";
 
 const repositoryRoot = new URL("../", import.meta.url);
@@ -83,13 +80,17 @@ const lintRelativeLinks = async (filename, content) => {
 
 test("issue form validator accepts the supported textarea schema", () => {
   assert.deepEqual(
-    validateIssueFormContent(validIssueForm, "bug_report.yaml"),
+    validateIssueForms([
+      { content: validIssueForm, source: "bug_report.yaml" }
+    ]),
     []
   );
 });
 
 test("issue form validator rejects malformed YAML", () => {
-  const errors = validateIssueFormContent("name: [\n", "bug_report.yaml");
+  const errors = validateIssueForms([
+    { content: "name: [\n", source: "bug_report.yaml" }
+  ]);
   assert.equal(errors.length, 1);
   assert.match(
     errors[0],
@@ -99,7 +100,7 @@ test("issue form validator rejects malformed YAML", () => {
 
 test("issue form validator requires long names, top-level strings, and a body", () => {
   const content = "name: bug\ndescription: ''\nbody: []\n";
-  const errors = validateIssueFormContent(content, "improvement.yaml");
+  const errors = validateIssueForms([{ content, source: "improvement.yaml" }]);
   assert.equal(errors.length, 3);
   assert.match(errors[0], /top-level description must be a non-empty string/u);
   assert.match(errors[1], /name must contain more than 3 characters/u);
@@ -122,7 +123,7 @@ test("issue form validator enforces the textarea field contract and id syntax", 
       "    validations:\n      required: true\n  - type: textarea\n    id: scope",
       "    validations:\n      required: false\n  - type: textarea\n    id: scope"
     );
-  const errors = validateIssueFormContent(content, "bug_report.yaml");
+  const errors = validateIssueForms([{ content, source: "bug_report.yaml" }]);
   assert.ok(
     errors.some((error) => error.includes("must use the textarea type"))
   );
@@ -147,7 +148,7 @@ test("issue form validator rejects duplicate field ids and labels", () => {
   const content = validIssueForm
     .replace("id: evidence", "id: problem")
     .replace("label: Evidence", "label: Problem");
-  const errors = validateIssueFormContent(content, "bug_report.yaml");
+  const errors = validateIssueForms([{ content, source: "bug_report.yaml" }]);
   assert.ok(errors.some((error) => error.includes("repeats field id problem")));
   assert.ok(
     errors.some((error) => error.includes("repeats field label Problem"))
