@@ -29,8 +29,11 @@ Resolve packaged resources from the executing module rather than the caller's wo
 Use Ultracite as the only caller of Oxlint and Oxfmt.
 Use named regex capture groups and access full matches or subgroups by name.
 Use named regex backreferences and replacement references instead of positional references.
+Preserve match selection, optional groups, flags, Unicode behavior, iteration, offsets, replacement semantics, and failure behavior when changing regular expressions.
 Prefer an existing parser or literal operation when it expresses the requirement more clearly.
-Inline single-use variables and logic when lint, evaluation order, side effects, and cleanup semantics remain unchanged.
+Inline single-use variables and logic when lint permits and behavior remains unchanged.
+Preserve evaluation order, side effects, cost, inferred types, overload selection, lazy execution, and callback contracts.
+Preserve exceptions, captured snapshots, resource lifetimes, cancellation, and cleanup semantics.
 Do not create hypothetical production helpers, expose internals, or add test seams for test convenience.
 Test references do not establish production reuse.
 Keep `.markdownlint-cli2.jsonc` set to `gitignore: true` and compact table-column style.

@@ -109,20 +109,15 @@ const parseIssueFormContent = (content, source) => {
     const line = Number.isInteger(error?.mark?.line)
       ? error.mark.line + 1
       : null;
-    const location = line === null ? source : `${source}:${line}`;
     return {
-      errors: [`${location}: issue form must contain valid YAML.`],
+      errors: [
+        `${line === null ? source : `${source}:${line}`}: issue form must contain valid YAML.`
+      ],
       form: null,
       source
     };
   }
 };
-
-/**
- * Parse and validate one issue form with markdownlint-cli2's YAML parser.
- */
-export const validateIssueFormContent = (content, source = "<form>") =>
-  parseIssueFormContent(content, source).errors;
 
 /**
  * Validate issue forms together, including unique chooser names.
