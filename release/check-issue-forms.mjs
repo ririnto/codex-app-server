@@ -147,7 +147,10 @@ export const validateIssueForms = (forms) => {
   return errors;
 };
 
-const run = () => {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   const root = fileURLToPath(new URL("../", import.meta.url));
   const directory = path.join(root, ".github/ISSUE_TEMPLATE");
   const files = readdirSync(directory, { withFileTypes: true })
@@ -170,11 +173,4 @@ const run = () => {
   } else {
     process.stdout.write(`Validated ${files.length} GitHub issue forms.\n`);
   }
-};
-
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-) {
-  run();
 }

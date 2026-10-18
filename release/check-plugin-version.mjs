@@ -48,26 +48,22 @@ export const validatePluginVersions = (claudeVersion, codexVersion) => {
   }
 };
 
-const run = () => {
-  const root = fileURLToPath(new URL("../", import.meta.url));
-  const claude = JSON.parse(
-    readFileSync(path.join(root, ".claude-plugin/plugin.json"), "utf-8")
-  );
-  const codex = JSON.parse(
-    readFileSync(path.join(root, ".codex-plugin/plugin.json"), "utf-8")
-  );
-  validatePluginVersions(claude.version, codex.version);
-  process.stdout.write(
-    "Host plugin versions match the yyyy.mm.dd.seq format.\n"
-  );
-};
-
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   try {
-    run();
+    const root = fileURLToPath(new URL("../", import.meta.url));
+    const claude = JSON.parse(
+      readFileSync(path.join(root, ".claude-plugin/plugin.json"), "utf-8")
+    );
+    const codex = JSON.parse(
+      readFileSync(path.join(root, ".codex-plugin/plugin.json"), "utf-8")
+    );
+    validatePluginVersions(claude.version, codex.version);
+    process.stdout.write(
+      "Host plugin versions match the yyyy.mm.dd.seq format.\n"
+    );
   } catch (error) {
     process.stderr.write(
       `Plugin version validation failed: ${error.message}\n`
