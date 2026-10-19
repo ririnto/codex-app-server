@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "description": "Self-marketplace catalog for the codex-app-server plugin repository.",
+  "name": "codex-app-server",
+  "owner": {
+    "name": "ririnto"
+  },
+  "plugins": [
+    {
+      "author": {
+        "name": "ririnto"
+      },
+      "category": "development",
+      "description": "MCP tools for inspecting and driving the running Codex app-server.",
+      "homepage": "https://github.com/ririnto/codex-app-server",
+      "keywords": ["codex", "app-server", "mcp", "threads"],
+      "license": "MIT",
+      "name": "codex-app-server",
+      "repository": "https://github.com/ririnto/codex-app-server",
+      "source": "./"
+    }
+  ]
+}
