@@ -43,7 +43,27 @@ claude plugin marketplace add ririnto/sinon
 claude plugin install codex-app-server@sinon
 ```
 
-In Codex, install `codex-app-server` from the Sinon repository marketplace and trust its MCP server.
+In Codex, install `codex-app-server` from the Sinon repository marketplace and trust its MCP server:
+
+```sh
+codex plugin marketplace add ririnto/sinon
+codex plugin add codex-app-server@sinon
+```
+
+This repository is also its own marketplace, so either host can install the plugin directly from it:
+
+```sh
+claude plugin marketplace add ririnto/codex-app-server
+claude plugin install codex-app-server@codex-app-server
+```
+
+```sh
+codex plugin marketplace add ririnto/codex-app-server
+codex plugin add codex-app-server@codex-app-server
+```
+
+The plugin name stays `codex-app-server` in both marketplaces, and only the marketplace suffix separates the two install names.
+Both installs provide the same MCP server, so keep one `codex-app-server` installation at a time.
 
 ## Runtime
 
@@ -348,6 +368,7 @@ Thread cleanup uses native `codex archive`, `codex unarchive`, and `codex delete
 The plugin adds no dedicated cleanup tools.
 
 - `.codex-plugin/plugin.json` declares Codex identity, the MCP configuration path, and `skills/`.
+- `.agents/plugins/marketplace.json` declares the Codex catalog for installing this repository as its own marketplace.
 - `mcp.json` and `.mcp.json` register the Codex and Claude Code stdio server.
 - `package.json` declares the executable and its MCP SDK, WebSocket, and schema dependencies.
 - `server.mjs` creates the MCP server, retains shared instructions, registers the feature modules, and starts stdio transport.
@@ -369,6 +390,7 @@ The plugin adds no dedicated cleanup tools.
 - `AGENTS.md` records catalog and policy maintenance requirements.
 - `tests/` verifies the stdio server against a disposable Unix-socket fixture.
 - `.claude-plugin/plugin.json` declares Claude Code identity, MCP configuration, and skills.
+- `.claude-plugin/marketplace.json` declares the Claude Code catalog for installing this repository as its own marketplace.
 - `release/` contains repository release-version and issue-form validation.
 - `rules/` contains the Markdown custom lint rule.
 
@@ -434,3 +456,21 @@ codex plugin list --marketplace sinon --json
 ```
 
 Start a new session and trust the MCP server before checking its loaded version and tools.
+
+The self-marketplace follows the same `main` branch under the `codex-app-server@codex-app-server` install name.
+For Claude Code, update the self-marketplace and reinstall the same qualified plugin name.
+
+```sh
+claude plugin marketplace update codex-app-server
+claude plugin uninstall codex-app-server@codex-app-server
+claude plugin install codex-app-server@codex-app-server
+```
+
+For Codex, upgrade the self-marketplace and reinstall the same qualified plugin name.
+
+```sh
+codex plugin marketplace upgrade codex-app-server
+codex plugin remove codex-app-server@codex-app-server
+codex plugin add codex-app-server@codex-app-server
+codex plugin list --marketplace codex-app-server --json
+```

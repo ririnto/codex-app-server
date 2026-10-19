@@ -1,0 +1,20 @@
+{
+  "interface": {
+    "displayName": "Codex App-Server"
+  },
+  "name": "codex-app-server",
+  "plugins": [
+    {
+      "category": "Development",
+      "name": "codex-app-server",
+      "policy": {
+        "authentication": "ON_INSTALL",
+        "installation": "AVAILABLE"
+      },
+      "source": {
+        "path": "./",
+        "source": "local"
+      }
+    }
+  ]
+}
