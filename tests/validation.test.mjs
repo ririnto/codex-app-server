@@ -60,9 +60,6 @@ body:
       required: true
 `;
 
-/**
- * Lint one source file with only relative-link validation enabled.
- */
 const lintRelativeLinks = async (filename, content) => {
   const result = await lint({
     config: {
