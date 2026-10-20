@@ -84,3 +84,14 @@ Official host and protocol references are listed in the runtime README metadata.
 We read the complete [Agent Skills combined reference](https://agentskills.io/llms-full.txt) for portable frontmatter and progressive disclosure.
 The thread-control skill follows its specification without redistributing the reference text.
 The official `skills-ref` validator supplies local format evidence rather than model-behavior acceptance.
+
+## Prompting Guidance Sources
+
+We used original prose informed by these official prompting references.
+
+- The [Claude overview](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/overview.md) explains success criteria and empirical evaluation.
+- The [OpenAI model guide](https://developers.openai.com/api/docs/guides/latest-model.md) discusses instruction conflicts, output expectations, and change-appropriate verification.
+- The [xAI prompting guide](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech/prompting-guide) covers objectives, factual sources, uncertainty, and matching tool definitions.
+- The [Meta prompting guide](https://dev.meta.ai/llama/docs/how-to-guides/prompting) covers explicit context, output formatting, and evidence for claims.
+
+Model-specific tuning and speech-specific advice are not repository-wide requirements.

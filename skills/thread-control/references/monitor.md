@@ -48,7 +48,8 @@ Filtered states remain recorded, so a subsequent `active`-to-`idle` completion r
 Fresh failed turns and thread systemError events bypass this previous-notLoaded activity filter because failures can precede observed active states.
 Those failures still follow their name, status, and unknown-previous filters.
 Unnamed threads are excluded by default, including their failed turns and thread systemError events.
-Use `--include-unnamed` to include them under the existing status and previous-state filters.
+Use `--include-unnamed` only when the assignment needs unnamed thread activity, including child failures.
+Retain the existing status and previous-state filters.
 Names must contain a non-whitespace character.
 Unnamed child failures describe excluded threads, so they do not bypass name selection.
 Transport, inspection, and capability diagnostics remain visible independently of thread name and status filters.
@@ -77,6 +78,7 @@ The ready-to-use Monitor input inherits the executable's named-thread default.
 Unchanged states remain quiet.
 `active` means work is running, `idle` means the thread stopped being active, and `notLoaded` means it left daemon memory.
 An idle event alone does not prove successful completion or delivery.
+Use events to trigger fresh tail reads instead of polling thread status.
 Read the tail and receipts before claiming either.
 
 `turnError` has `status: "failed"`, `threadId`, `turnId`, and the native `error` when available.
