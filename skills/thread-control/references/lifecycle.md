@@ -2,6 +2,7 @@
 
 Retire only the exact authorized thread after its pending work ends and its owner releases the lease.
 Read its latest request and outcome before deciding that it is complete.
+Resolve delivery receipts before retiring a thread.
 Check descendants, active queue deliveries, native writer ownership, and consumers of associated worktrees.
 Preserve the current thread, unfinished work, unique uncommitted content, recovery state, and required transcripts.
 Establish the installed command's complete affected set, including any descendants changed by its backend.
@@ -12,6 +13,8 @@ Preserve the thread when descendant coverage, ownership, or native effects remai
 
 Inspect the installed `codex archive --help` and `codex delete --help` before choosing native commands.
 Use the same daemon and transport that own the inspected thread.
+For a custom socket, pass `--remote unix://SOCKET_PATH` using the `CODEX_APP_SERVER_SOCKET` path.
+Keep exact private thread IDs and socket paths in transient execution context, not tracked files or reports.
 The plugin refuses archive, unarchive, and delete through raw and generated MCP tools.
 
 ```sh
