@@ -155,7 +155,9 @@ A replacement active turn keeps the queue waiting.
 Use `mode: "steer"` only after verifying provider support for active input.
 Accepted input returns `status: "steered"`, which acknowledges app-server acceptance rather than turn completion.
 A known `unsupported websocket request type: response.interrupt` error in thread history selects the queue even in explicit steering mode.
-The process also remembers that rejection after a steering or interruption response.
+The process also remembers refusals from steering or interruption responses for up to 128 thread IDs.
+A new refusal refreshes its ID, and exceeding the limit evicts the oldest remembered ID.
+An evicted ID may be steered again unless its thread history still contains the refusal.
 An unsupported or ambiguous steering response returns `status: "refused"` without retrying or resending its text.
 Provider errors can arrive after steering acceptance, so inspect the thread afterward when using explicit steering.
 Native interruption returns `status: "interrupted"` on acknowledgment or `status: "refused"` with its failure reason.
