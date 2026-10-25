@@ -625,6 +625,47 @@ test("sends thin thread requests for fork, rename, goal, loaded list, and compac
   ]);
 });
 
+test("goal setter forwards empty objectives and preserves native rejection", async (t) => {
+  const { client, requests } = await fixture(t, ({ message, reply, ws }) => {
+    if (
+      message.method === "thread/goal/set" &&
+      message.params.objective === ""
+    ) {
+      ws.send(
+        JSON.stringify({
+          error: { code: -32_602, message: "empty objective refused" },
+          id: message.id
+        })
+      );
+    } else {
+      reply({});
+    }
+  });
+  const omitted = await call(client, "codex_goal", {
+    action: "set",
+    status: "paused",
+    thread_id: "fixture-thread"
+  });
+  assert.equal(omitted.error, false);
+  assert.deepEqual(requests.at(-1).params, {
+    status: "paused",
+    threadId: "fixture-thread"
+  });
+  const empty = await call(client, "codex_goal", {
+    action: "set",
+    objective: "",
+    status: "paused",
+    thread_id: "fixture-thread"
+  });
+  assert.equal(empty.error, true);
+  assert.match(empty.text, /"code":-32602/u);
+  assert.deepEqual(requests.at(-1).params, {
+    objective: "",
+    status: "paused",
+    threadId: "fixture-thread"
+  });
+});
+
 test("derives every native tool with exact parameter schemas and conservative annotations", async (t) => {
   const { client, requests } = await fixture(
     t,
