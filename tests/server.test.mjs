@@ -1119,6 +1119,88 @@ test("detects unsupported steering responses and does not retry an ambiguous wri
   await call(client, "codex_queue", { action: "cancel", thread_id: "fixture" });
 });
 
+test("unsupported-thread memory evicts the oldest IDs and retains recent queue fallbacks", async (t) => {
+  const { client, requests } = await fixture(t, ({ message, reply, ws }) => {
+    if (message.method === "thread/read") {
+      reply({
+        thread: {
+          turns: [{ id: "active", status: "inProgress" }]
+        }
+      });
+    } else if (
+      message.method === "turn/interrupt" ||
+      message.method === "turn/steer"
+    ) {
+      ws.send(
+        JSON.stringify({
+          error: {
+            code: -32_000,
+            message: "unsupported websocket request type: response.interrupt"
+          },
+          id: message.id
+        })
+      );
+    } else {
+      reply({});
+    }
+  });
+  const threadIds = Array.from(
+    { length: 129 },
+    (_, index) => `thread-${index}`
+  );
+  const refuseThread = async (index) => {
+    if (index < threadIds.length) {
+      const threadId = threadIds[index];
+      const interrupted = index === threadIds.length - 1 || index % 2 === 1;
+      const refused = interrupted
+        ? await call(client, "codex_interrupt", { thread_id: threadId })
+        : await call(client, "codex_steer", {
+            mode: "steer",
+            text: "attempt",
+            thread_id: threadId
+          });
+      assert.equal(refused.value.status, "refused");
+      await refuseThread(index + 1);
+    }
+  };
+  await refuseThread(0);
+  const evicted = await call(client, "codex_steer", {
+    mode: "steer",
+    text: "retry",
+    thread_id: threadIds[0]
+  });
+  assert.equal(evicted.value.status, "refused");
+  assert.equal(
+    requests.filter(
+      ({ method, params }) =>
+        method === "turn/steer" && params.threadId === threadIds[0]
+    ).length,
+    2
+  );
+  const recent = threadIds.at(-1);
+  const queued = await call(client, "codex_steer", {
+    mode: "steer",
+    text: "queue instead",
+    thread_id: recent
+  });
+  assert.equal(queued.value.status, "queued");
+  assert.equal(
+    requests.filter(
+      ({ method, params }) =>
+        method === "turn/interrupt" && params.threadId === recent
+    ).length,
+    1
+  );
+  assert.equal(
+    requests.filter(
+      ({ method, params }) =>
+        method === "turn/steer" && params.threadId === recent
+    ).length,
+    0
+  );
+  await call(client, "codex_queue", { action: "cancel", thread_id: recent });
+});
+
 test("queue connection loss refuses undelivered messages without reconnecting", async (t) => {
   const { client, connections, requests } = await fixture(
     t,
