@@ -4618,6 +4618,82 @@ for (const includeInitial of [false, true]) {
   });
 }
 
+test("monitor preserves a terminal notification received during its first initialization", async (t) => {
+  let initializes = 0;
+  const historical = {
+    completedAt: 0,
+    id: "historical-initialization-terminal",
+    status: "completed"
+  };
+  const turn = {
+    id: "initialization-terminal",
+    items: [
+      {
+        phase: "final_answer",
+        text: "Fresh completion",
+        type: "agentMessage"
+      }
+    ],
+    status: "completed"
+  };
+  const { connections, socket } = await fixture(
+    t,
+    ({ message, reply, connections: targets }) => {
+      if (message.method === "initialize") {
+        initializes += 1;
+        if (initializes === 1) {
+          const [owner] = targets;
+          owner.send(
+            JSON.stringify({
+              method: "thread/status/changed",
+              params: { status: "active", threadId: "watched" }
+            })
+          );
+          owner.send(
+            JSON.stringify({
+              method: "turn/completed",
+              params: { threadId: "watched", turn: historical }
+            })
+          );
+          owner.send(
+            JSON.stringify({
+              method: "turn/completed",
+              params: { threadId: "watched", turn }
+            })
+          );
+        }
+        reply({});
+      } else if (message.method === "thread/turns/list") {
+        reply({ data: [turn] });
+      } else {
+        reply({ thread: { name: "Synthetic startup name", status: "active" } });
+      }
+    },
+    { failInitialize: true }
+  );
+  const { child, events, exited } = monitor(t, socket, [
+    "--include-unnamed",
+    "--thread",
+    "watched"
+  ]);
+  await t.waitFor(
+    () =>
+      assert.equal(events.filter(({ turnId }) => turnId === turn.id).length, 1),
+    { timeout: 2000 }
+  );
+  const terminal = events.find(({ turnId }) => turnId === turn.id);
+  assert.equal(terminal.event, "turnCompleted");
+  assert.equal(terminal.previous, "active");
+  assert.equal(terminal.finalMessage, "Fresh completion");
+  assert.equal(
+    events.filter(({ turnId }) => turnId === historical.id).length,
+    0
+  );
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  await t.waitFor(() => assert.equal(connections.size, 0));
+});
+
 for (const includeInitial of [false, true]) {
   for (const outcome of ["failed", "completed"]) {
     for (const race of [
