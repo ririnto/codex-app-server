@@ -1,5 +1,5 @@
 {
-  "name": "@sinon/codex-app-server",
+  "name": "@ririnto/codex-app-server",
   "version": "1.1.2",
   "private": true,
   "description": "Stdio MCP access to the running Codex app-server Unix control socket.",
