@@ -1,13 +1,13 @@
 catalog:
   husky: ^9.1.7
   markdownlint: ^0.42.0
-  markdownlint-cli2: ^0.23.3
+  markdownlint-cli2: ^0.24.0
   markdownlint-rule-relative-links: ^5.1.4
-  npm-run-all2: ^9.0.3
+  npm-run-all2: ^9.0.4
   oxfmt: ^0.74.0
   oxlint: ^1.89.0
   typescript: ^7.0.2
-  ultracite: ^8.0.1
+  ultracite: ^8.0.2
 
 minimumReleaseAge: 0
 
