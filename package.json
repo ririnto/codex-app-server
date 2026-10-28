@@ -9,6 +9,7 @@
     "codex-thread-monitor": "./monitor.mjs"
   },
   "files": [
+    "THIRD_PARTY_NOTICES.md",
     "server.mjs",
     "monitor.mjs",
     "lib/",

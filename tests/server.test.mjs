@@ -90,7 +90,7 @@ const CATALOG = {
  * Run the real stdio MCP server against a disposable Unix WebSocket fixture.
  */
 const fixture = async (context, handler, options = {}) => {
-  const directory = await mkdtemp("/tmp/sinon-mcp-");
+  const directory = await mkdtemp("/tmp/local-mcp-");
   const socket = path.join(directory, "socket space-\u03A9?#:.sock");
   const http = createServer();
   const wsServer = new WebSocketServer({ server: http });
@@ -232,7 +232,7 @@ test("lists self-describing curated tools and all sources without repairing meta
 });
 
 test("packed executable includes and registers every feature module", async (t) => {
-  const directory = await mkdtemp("/tmp/sinon-mcp-package-");
+  const directory = await mkdtemp("/tmp/local-mcp-package-");
   t.after(() => rm(directory, { force: true, recursive: true }));
   const { stdout } = await promisify(execFile)(
     "npm",
@@ -251,6 +251,7 @@ test("packed executable includes and registers every feature module", async (t) 
     !packed.files.some((entry) => entry.path === "monitors/monitors.json")
   );
   for (const file of [
+    "THIRD_PARTY_NOTICES.md",
     "server.mjs",
     "monitor.mjs",
     "lib/monitor.mjs",
@@ -321,8 +322,8 @@ test("packed executable includes and registers every feature module", async (t) 
   const started = requests.find((request) => request.method === "thread/start");
   assert.equal(started.params.ephemeral, true);
   assert.ok(
-    started.params.cwd.startsWith("/tmp/sinon-mcp-") ||
-      started.params.cwd.startsWith("/private/tmp/sinon-mcp-")
+    started.params.cwd.startsWith("/tmp/local-mcp-") ||
+      started.params.cwd.startsWith("/private/tmp/local-mcp-")
   );
   assert.deepEqual(requests.at(-1).params, {
     arguments: {},

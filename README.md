@@ -362,7 +362,7 @@ Lease and writer rules preserve the current owner, and cleanup archives before s
 The skill loads its monitor reference and ready-to-use native Monitor input only when monitoring is needed.
 Orchestrators use the packaged monitor with wildcard status filters and re-arm explicit watches at their 30-minute deadline only while the assignment remains active.
 No skill helper script is needed for this workflow.
-The layout and frontmatter follow the [Agent Skills specification](https://agentskills.io/specification) and Workgraph's progressive-disclosure conventions.
+The layout and frontmatter follow the [Agent Skills specification](https://agentskills.io/specification).
 
 ## Package Contents
 
@@ -422,7 +422,7 @@ The `npm-run-all2` package provides the existing `run-p` and `run-s` script comm
 Keep runtime dependencies npm-compatible and development dependencies in the pnpm catalog.
 The npm package retains its compatible package version because `npm pack` requires a name and version.
 Both host manifests own the plugin's calendar release version.
-The Markdown gate checks local links, and its TOML parser override selects the patched release used by Workgraph.
+The Markdown gate checks local links, and its TOML parser override selects a patched release.
 See [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for repository contracts.
 
 ## Version Updates
