@@ -439,6 +439,22 @@ await test("packed executable includes and registers every feature module", asyn
   assert.deepEqual(requests.at(-1).params, { threadId: "fixture-thread" });
 });
 
+await test("accepts a null MCP tool error flag", async (t) => {
+  const { client } = await fixture(t, ({ message, reply }) => {
+    reply(
+      message.method === "thread/start"
+        ? { thread: { id: "fixture-ephemeral" } }
+        : { content: [], isError: null, structuredContent: { fixture: true } }
+    );
+  });
+  const result = await call(client, "codex_mcp_tool", {
+    server: "fixture-server",
+    tool: "fixture-tool"
+  });
+  assert.equal(result.error, false);
+  assert.deepEqual(result.value, { fixture: true });
+});
+
 await test("starts a new thread's first turn directly, while existing threads resume", async (t) => {
   const { client, requests } = await fixture(t, ({ message, reply }) => {
     if (message.method === "thread/start") {
