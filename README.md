@@ -398,7 +398,7 @@ The plugin adds no dedicated cleanup tools.
 
 ## Development
 
-Use the Node.js engine range and pnpm version declared in `package.json`.
+Use the Node.js engine range declared in `package.json` and the pnpm version declared in `.tool-versions`.
 Install locked dependencies and run the aggregate gate.
 
 ```sh
@@ -409,6 +409,7 @@ claude plugin validate .claude-plugin/plugin.json
 ```
 
 The aggregate gate runs the disposable-socket runtime suite, release-version checks, issue-form validation, validation fixtures, Markdown links, and Ultracite.
+The Git hooks run `pnpm run pre-commit` and `pnpm run pre-push` directly.
 Use `pnpm run check:runtime` for runtime changes and other named `check:*` commands for bounded changes.
 Runtime tests pack the real npm executable and launch it from a disposable directory with an isolated npm cache.
 The fixtures exercise transport, catalogs, queues, monitors, cancellation, and shutdown without mutating a live daemon.
