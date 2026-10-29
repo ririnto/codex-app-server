@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema
@@ -23,7 +23,7 @@ import { registerTurnTools } from "./lib/turn-tools.mjs";
  * Archive, unarchive, and delete threads with the native `codex archive|unarchive|delete --remote unix://` commands.
  */
 
-const server = new Server(
+const { server } = new McpServer(
   { name: "codex-app-server", version: "1" },
   {
     capabilities: { logging: {}, tools: { listChanged: true } },
@@ -60,13 +60,15 @@ const server = new Server(
   }
 );
 
-const registry = new Map();
-registry.registerTool = (name, config, handler) => {
-  if (registry.has(name)) {
+/** @type {Map<string, import("./lib/types.d.ts").RegisteredTool>} */
+const tools = new Map();
+/** @type {import("./lib/types.d.ts").ToolRegistry["registerTool"]} */
+const registerTool = (name, config, handler) => {
+  if (tools.has(name)) {
     throw new Error(`Duplicated curated tool: ${name}`);
   }
   const schema = z.object(config.inputSchema ?? {});
-  registry.set(name, {
+  tools.set(name, {
     definition: {
       ...config,
       inputSchema: z.toJSONSchema(schema, { io: "input" }),
@@ -76,6 +78,7 @@ registry.registerTool = (name, config, handler) => {
       handler(await schema.parseAsync(args ?? {}), extra)
   });
 };
+const registry = Object.assign(tools, { registerTool });
 registerThreadTools(registry);
 registerTurnTools(registry);
 registerThreadAdminTools(registry);
@@ -91,7 +94,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   let result;
   try {
     const selected = registry.get(request.params.name);
-    if (selected?.method && !refusal(selected.method)) {
+    if (
+      selected?.method !== undefined &&
+      selected.method !== "" &&
+      refusal(selected.method) === null
+    ) {
       await refresh({ regenerate: false });
     }
     const tool = registry.get(request.params.name);
@@ -102,7 +109,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     result = await tool.handler(request.params.arguments ?? {}, extra);
   } catch (error) {
     result = {
-      content: [{ text: error.message, type: "text" }],
+      content: [
+        {
+          text: error instanceof Error ? error.message : "Tool request failed",
+          type: "text"
+        }
+      ],
       isError: true
     };
   }
@@ -113,8 +125,8 @@ const close = () => {
   closeQueues();
   native.close();
 };
-const stop = async () => {
-  await server.close();
+const stop = () => {
+  void server.close();
 };
 process.stdin.once("end", stop);
 process.stdin.once("close", stop);

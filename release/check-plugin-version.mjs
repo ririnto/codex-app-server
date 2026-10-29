@@ -2,6 +2,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { z } from "zod";
+
+const manifest = z.looseObject({ version: z.unknown() });
 const versionPattern =
   /^(?<year>\d{4})\.(?<month>\d{2})\.(?<day>\d{2})\.(?<sequence>\d{2})$/u;
 
@@ -54,12 +57,16 @@ if (
 ) {
   try {
     const root = fileURLToPath(new URL("../", import.meta.url));
-    const claude = JSON.parse(
+    /** @type {unknown} */
+    const claudeContent = JSON.parse(
       readFileSync(path.join(root, ".claude-plugin/plugin.json"), "utf-8")
     );
-    const codex = JSON.parse(
+    /** @type {unknown} */
+    const codexContent = JSON.parse(
       readFileSync(path.join(root, ".codex-plugin/plugin.json"), "utf-8")
     );
+    const claude = manifest.parse(claudeContent);
+    const codex = manifest.parse(codexContent);
     validatePluginVersions(claude.version, codex.version);
     process.stdout.write(
       "Host plugin versions match the yyyy.mm.dd.seq format.\n"

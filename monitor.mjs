@@ -20,14 +20,16 @@ const main = async () => {
   });
   const threadIds =
     values.thread ??
-    (process.env.CODEX_APP_SERVER_MONITOR_THREADS || "")
+    (process.env.CODEX_APP_SERVER_MONITOR_THREADS ?? "")
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean);
   const statuses =
     values.status ??
     (
-      process.env.CODEX_APP_SERVER_MONITOR_STATUSES ||
+      (process.env.CODEX_APP_SERVER_MONITOR_STATUSES === ""
+        ? undefined
+        : process.env.CODEX_APP_SERVER_MONITOR_STATUSES) ??
       DEFAULT_STATUSES.join(",")
     )
       .split(",")
@@ -58,7 +60,9 @@ const main = async () => {
     );
   }
   const stopped = new AbortController();
-  const stop = () => stopped.abort();
+  const stop = () => {
+    stopped.abort();
+  };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   const timer = timeout === null ? null : setTimeout(stop, timeout * 1000);
@@ -91,7 +95,7 @@ try {
   await main();
 } catch (error) {
   process.stdout.write(
-    `${JSON.stringify({ error: error.message, event: "transport", status: "systemError", threadId: null, threadName: null })}\n`
+    `${JSON.stringify({ error: error instanceof Error ? error.message : "Monitor failed", event: "transport", status: "systemError", threadId: null, threadName: null })}\n`
   );
   process.exitCode = 1;
 }

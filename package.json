@@ -24,7 +24,7 @@
     "check:plugin-version": "node release/check-plugin-version.mjs",
     "check:validation-tests": "node --test tests/validation.test.mjs",
     "check:markdownlint-cli2": "markdownlint-cli2",
-    "check:ultracite": "ultracite check",
+    "check:ultracite": "ultracite check --type-aware",
     "fix": "run-p fix:*",
     "fix:markdownlint-cli2": "markdownlint-cli2 --fix",
     "fix:ultracite": "ultracite fix",
@@ -35,10 +35,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "execa": "^10.2.1",
     "ws": "^8.22.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/ws": "catalog:",
     "husky": "catalog:",
     "markdownlint": "catalog:",
     "markdownlint-cli2": "catalog:",
@@ -46,6 +49,7 @@
     "npm-run-all2": "catalog:",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
     "typescript": "catalog:",
     "ultracite": "catalog:"
   },

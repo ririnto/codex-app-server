@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { Socket } from "node:net";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { test } from "node:test";
@@ -12,12 +13,14 @@ import { promisify } from "node:util";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   LoggingMessageNotificationSchema,
   ToolListChangedNotificationSchema
 } from "@modelcontextprotocol/sdk/types.js";
-import { WebSocketServer } from "ws";
+import { execa } from "execa";
+import { WebSocket, WebSocketServer } from "ws";
+import { z } from "zod";
 
 import { watchThreads } from "../lib/monitor.mjs";
 import { createNativeSessions } from "../lib/native-session.mjs";
@@ -38,6 +41,43 @@ const SOURCE_KINDS = [
   "subAgentOther",
   "unknown"
 ];
+
+const fixtureMessage = z.looseObject({
+  error: z.unknown().optional(),
+  id: z.union([z.string(), z.number()]).optional(),
+  method: z.string().optional(),
+  params: z.unknown().optional(),
+  result: z.unknown().optional()
+});
+
+const queueResult = z.looseObject({
+  messages: z.array(
+    z.looseObject({
+      id: z.string(),
+      reason: z.string(),
+      status: z.string(),
+      turnId: z.string().optional()
+    })
+  )
+});
+const queueReceipt = z.looseObject({
+  id: z.string(),
+  reason: z.string(),
+  status: z.string()
+});
+const turnInput = z.looseObject({
+  input: z.array(z.looseObject({ text: z.string() }))
+});
+const monitorParams = z.looseObject({
+  cursor: z.string().nullish(),
+  includeTurns: z.boolean().optional(),
+  threadId: z.string().optional(),
+  turnId: z.string().optional()
+});
+const statusResult = z.looseObject({ status: z.string() });
+const discoveredMethods = z.array(
+  z.looseObject({ method: z.string(), tool: z.string() })
+);
 
 const CATALOG = {
   definitions: { Mode: { enum: ["a", "b", "#/definitions/literal"] } },
@@ -88,27 +128,46 @@ const CATALOG = {
 
 /**
  * Run the real stdio MCP server against a disposable Unix WebSocket fixture.
+ * @param {import("node:test").TestContext} context - Test owner of the fixture.
+ * @param {(input: {connections: Set<import("ws").WebSocket>, message: z.infer<typeof fixtureMessage>, reply: (result: unknown) => void, ws: import("ws").WebSocket}) => void} handler - Native request handler.
+ * @param {{catalog?: Record<string, unknown>, clientNotifications?: unknown, failInitialize?: boolean, package?: string, serverNotifications?: unknown, serverRequests?: unknown}} [options] - Fixture configuration.
  */
 const fixture = async (context, handler, options = {}) => {
   const directory = await mkdtemp("/tmp/local-mcp-");
   const socket = path.join(directory, "socket space-\u03A9?#:.sock");
   const http = createServer();
   const wsServer = new WebSocketServer({ server: http });
+  /** @type {z.infer<typeof fixtureMessage>[]} */
   const requests = [];
+  /** @type {Set<import("ws").WebSocket>} */
   const connections = new Set();
   wsServer.on("connection", (ws) => {
     connections.add(ws);
     ws.on("error", () => {});
-    ws.on("close", () => connections.delete(ws));
+    ws.on("close", () => {
+      connections.delete(ws);
+    });
     ws.on("message", (bytes) => {
-      const message = JSON.parse(bytes.toString());
-      if (!message.id) {
+      let data;
+      if (Buffer.isBuffer(bytes)) {
+        data = bytes;
+      } else if (Array.isArray(bytes)) {
+        data = Buffer.concat(bytes);
+      } else {
+        data = Buffer.from(bytes);
+      }
+      /** @type {unknown} */
+      const parsed = JSON.parse(data.toString());
+      const message = fixtureMessage.parse(parsed);
+      if (message.id === undefined || message.id === "" || message.id === 0) {
         return;
       }
       requests.push(message);
-      const reply = (result) =>
+      /** @param {unknown} result - Native response payload. */
+      const reply = (result) => {
         ws.send(JSON.stringify({ id: message.id, result }));
-      if (message.method === "initialize" && !options.failInitialize) {
+      };
+      if (message.method === "initialize" && options.failInitialize !== true) {
         reply({});
       } else {
         handler({ connections, message, reply, ws });
@@ -119,17 +178,21 @@ const fixture = async (context, handler, options = {}) => {
   await once(http, "listening");
   const codexBin = path.join(directory, "fake-codex.mjs");
   const transport = new StdioClientTransport({
-    args: options.package
-      ? [
-          "exec",
-          "--yes",
-          "--install-links",
-          `--package=${options.package}`,
-          "--",
-          "codex-app-server"
-        ]
-      : [serverPath],
-    command: options.package ? "npm" : process.execPath,
+    args:
+      options.package !== undefined && options.package !== ""
+        ? [
+            "exec",
+            "--yes",
+            "--install-links",
+            `--package=${options.package}`,
+            "--",
+            "codex-app-server"
+          ]
+        : [serverPath],
+    command:
+      options.package !== undefined && options.package !== ""
+        ? "npm"
+        : process.execPath,
     cwd: directory,
     env: {
       ...process.env,
@@ -178,7 +241,9 @@ if (process.argv[2] === "--version") {
       ws.terminate();
     }
     await promisify(wsServer.close.bind(wsServer))();
-    await promisify(http.close.bind(http))();
+    const httpClosed = once(http, "close");
+    http.close();
+    await httpClosed;
     await rm(directory, { force: true, recursive: true });
   });
   await client.connect(transport);
@@ -195,17 +260,29 @@ if (process.argv[2] === "--version") {
 
 /**
  * Decode an MCP tool's JSON result while preserving the error flag for assertions.
+ * @param {Client} client - MCP client connected to the fixture.
+ * @param {string} name - Tool name.
+ * @param {Record<string, unknown>} args - Tool arguments.
  */
 const call = async (client, name, args = {}) => {
-  const result = await client.callTool({ arguments: args, name });
+  const result = z
+    .looseObject({
+      content: z.tuple([z.looseObject({ text: z.string() })]).rest(z.unknown()),
+      isError: z.boolean().optional()
+    })
+    .parse(await client.callTool({ arguments: args, name }));
+  const value =
+    result.isError === true
+      ? null
+      : z.json().parse(JSON.parse(result.content[0].text));
   return {
     error: result.isError === true,
     text: result.content[0].text,
-    value: result.isError ? null : JSON.parse(result.content[0].text)
+    value
   };
 };
 
-test("lists self-describing curated tools and all sources without repairing metadata", async (t) => {
+await test("lists self-describing curated tools and all sources without repairing metadata", async (t) => {
   const { client, requests } = await fixture(t, ({ reply }) => {
     reply({
       data: [{ id: "fixture-thread", preview: "Fixture", source: "exec" }]
@@ -214,9 +291,12 @@ test("lists self-describing curated tools and all sources without repairing meta
   const { tools } = await client.listTools();
   assert.equal(tools.length, 14);
   for (const tool of tools) {
-    assert.ok(tool.description);
+    assert.ok(tool.description !== undefined && tool.description !== "");
     for (const field of Object.values(tool.inputSchema.properties)) {
-      assert.ok(field.description);
+      assert.ok(
+        z.looseObject({ description: z.string() }).parse(field).description
+          .length > 0
+      );
     }
   }
   assert.equal(
@@ -226,15 +306,26 @@ test("lists self-describing curated tools and all sources without repairing meta
   );
   const result = await call(client, "codex_threads");
   assert.equal(result.error, false);
-  assert.equal(result.value[0].id, "fixture-thread");
-  assert.deepEqual(requests.at(-1).params.sourceKinds, SOURCE_KINDS);
-  assert.equal(requests.at(-1).params.useStateDbOnly, true);
+  const threads = z
+    .array(z.looseObject({ id: z.string() }))
+    .parse(result.value);
+  const params = z
+    .looseObject({
+      sourceKinds: z.array(z.string()),
+      useStateDbOnly: z.boolean()
+    })
+    .parse(requests.at(-1)?.params);
+  assert.equal(threads[0].id, "fixture-thread");
+  assert.deepEqual(params.sourceKinds, SOURCE_KINDS);
+  assert.equal(params.useStateDbOnly, true);
 });
 
-test("packed executable includes and registers every feature module", async (t) => {
+await test("packed executable includes and registers every feature module", async (t) => {
   const directory = await mkdtemp("/tmp/local-mcp-package-");
-  t.after(() => rm(directory, { force: true, recursive: true }));
-  const { stdout } = await promisify(execFile)(
+  t.after(async () => {
+    await rm(directory, { force: true, recursive: true });
+  });
+  const { stdout } = await execa(
     "npm",
     ["pack", "--json", "--ignore-scripts", "--pack-destination", directory],
     {
@@ -245,7 +336,14 @@ test("packed executable includes and registers every feature module", async (t) 
       }
     }
   );
-  const [packed] = JSON.parse(stdout);
+  const [packed] = z
+    .tuple([
+      z.looseObject({
+        filename: z.string(),
+        files: z.array(z.looseObject({ path: z.string() }))
+      })
+    ])
+    .parse(JSON.parse(stdout));
   assert.ok(!packed.files.some((entry) => entry.path === "lib/raw-call.mjs"));
   assert.ok(
     !packed.files.some((entry) => entry.path === "monitors/monitors.json")
@@ -320,10 +418,13 @@ test("packed executable includes and registers every feature module", async (t) 
   });
   assert.deepEqual(proxied.value, { fixture: true });
   const started = requests.find((request) => request.method === "thread/start");
-  assert.equal(started.params.ephemeral, true);
+  const startParams = z
+    .looseObject({ cwd: z.string(), ephemeral: z.boolean() })
+    .parse(started.params);
+  assert.equal(startParams.ephemeral, true);
   assert.ok(
-    started.params.cwd.startsWith("/tmp/local-mcp-") ||
-      started.params.cwd.startsWith("/private/tmp/local-mcp-")
+    startParams.cwd.startsWith("/tmp/local-mcp-") ||
+      startParams.cwd.startsWith("/private/tmp/local-mcp-")
   );
   assert.deepEqual(requests.at(-1).params, {
     arguments: {},
@@ -338,7 +439,7 @@ test("packed executable includes and registers every feature module", async (t) 
   assert.deepEqual(requests.at(-1).params, { threadId: "fixture-thread" });
 });
 
-test("starts a new thread's first turn directly, while existing threads resume", async (t) => {
+await test("starts a new thread's first turn directly, while existing threads resume", async (t) => {
   const { client, requests } = await fixture(t, ({ message, reply }) => {
     if (message.method === "thread/start") {
       reply({ thread: { id: "fixture-new" } });
@@ -355,7 +456,10 @@ test("starts a new thread's first turn directly, while existing threads resume",
     name: "Fixture",
     text: "Authorized fixture turn"
   });
-  assert.equal(started.value.turn.status, "started");
+  assert.equal(
+    z.looseObject({ turn: statusResult }).parse(started.value).turn.status,
+    "started"
+  );
   assert.deepEqual(
     requests.map((request) => request.method),
     ["initialize", "thread/start", "thread/name/set", "turn/start"]
@@ -370,7 +474,7 @@ test("starts a new thread's first turn directly, while existing threads resume",
   );
 });
 
-test("rejects non-positive page and trailing counts before opening a daemon connection", async (t) => {
+await test("rejects non-positive page and trailing counts before opening a daemon connection", async (t) => {
   const { client, requests } = await fixture(t, ({ reply }) => {
     reply({ thread: { turns: [{ id: "old" }, { id: "new" }] } });
   });
@@ -389,12 +493,15 @@ test("rejects non-positive page and trailing counts before opening a daemon conn
     turns: 1
   });
   assert.deepEqual(
-    result.value.turns.map((turn) => turn.id),
+    z
+      .looseObject({ turns: z.array(z.looseObject({ id: z.string() })) })
+      .parse(result.value)
+      .turns.map((turn) => turn.id),
     ["new"]
   );
 });
 
-test("buffers early completion, matches the turn, and returns structured failure diagnostics", async (t) => {
+await test("buffers early completion, matches the turn, and returns structured failure diagnostics", async (t) => {
   const diagnostic = {
     codexErrorInfo: "usageLimitExceeded",
     message: "Fixture diagnostic"
@@ -432,12 +539,19 @@ test("buffers early completion, matches the turn, and returns structured failure
     thread_id: "fixture-thread",
     wait_seconds: 2
   });
-  assert.equal(result.value.status, "failed");
-  assert.equal(result.value.finalMessage, "Fixture final");
-  assert.deepEqual(result.value.error, diagnostic);
+  const failed = z
+    .looseObject({
+      error: z.unknown(),
+      finalMessage: z.string(),
+      status: z.string()
+    })
+    .parse(result.value);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.finalMessage, "Fixture final");
+  assert.deepEqual(failed.error, diagnostic);
 });
 
-test("reports wait timeout and socket closure during a turn", async (t) => {
+await test("reports wait timeout and socket closure during a turn", async (t) => {
   let drop = false;
   const { client } = await fixture(t, ({ message, reply, ws }) => {
     if (message.method === "turn/start") {
@@ -457,20 +571,22 @@ test("reports wait timeout and socket closure during a turn", async (t) => {
     wait_seconds: 0.05
   };
   const timeout = await call(client, "codex_send", args);
-  assert.equal(timeout.value.status, "waitTimedOut");
+  assert.equal(statusResult.parse(timeout.value).status, "waitTimedOut");
   drop = true;
   const closed = await call(client, "codex_send", { ...args, wait_seconds: 2 });
-  assert.equal(closed.value.status, "connectionClosed");
+  assert.equal(statusResult.parse(closed.value).status, "connectionClosed");
 });
 
 for (const failure of ["close", "frame"]) {
-  test(`fails pending requests promptly on ${failure} and survives the connection failure`, async (t) => {
+  void test(`fails pending requests promptly on ${failure} and survives the connection failure`, async (t) => {
     let mode = failure;
     const { client } = await fixture(t, ({ reply, ws }) => {
       if (mode === "close") {
         ws.close();
       } else if (mode === "frame") {
-        ws._socket.write(Buffer.from([0x83, 0x00]));
+        z.instanceof(Socket)
+          .parse(Object.getOwnPropertyDescriptor(ws, "_socket")?.value)
+          .write(Buffer.from([0x83, 0x00]));
       } else {
         reply({ data: [] });
       }
@@ -485,7 +601,7 @@ for (const failure of ["close", "frame"]) {
   });
 }
 
-test("closes rejected initialization connections and keeps reset-credit refusal offline", async (t) => {
+await test("closes rejected initialization connections and keeps reset-credit refusal offline", async (t) => {
   const { client, connections, requests } = await fixture(
     t,
     ({ message, ws }) => {
@@ -506,7 +622,7 @@ test("closes rejected initialization connections and keeps reset-credit refusal 
   assert.match(refused.text, /requires a separate direct human instruction/u);
   assert.equal(requests.length, 0);
   const failures = await Promise.all(
-    Array.from({ length: 3 }, () => call(client, "codex_threads"))
+    Array.from({ length: 3 }, async () => await call(client, "codex_threads"))
   );
   for (const result of failures) {
     assert.match(result.text, /Fixture incompatible protocol/u);
@@ -515,7 +631,7 @@ test("closes rejected initialization connections and keeps reset-credit refusal 
   assert.equal(connections.size, 0);
 });
 
-test("steers and interrupts only an in-progress last turn with its ID filled in", async (t) => {
+await test("steers and interrupts only an in-progress last turn with its ID filled in", async (t) => {
   let status = "inProgress";
   const { client, requests } = await fixture(t, ({ message, reply }) => {
     if (message.method === "thread/read") {
@@ -538,7 +654,10 @@ test("steers and interrupts only an in-progress last turn with its ID filled in"
     text: "Authorized steer",
     thread_id: "fixture-thread"
   });
-  assert.equal(steered.value.turnId, "live");
+  assert.equal(
+    z.looseObject({ turnId: z.string() }).parse(steered.value).turnId,
+    "live"
+  );
   assert.deepEqual(requests.at(-1).params, {
     expectedTurnId: "live",
     input: [{ text: "Authorized steer", type: "text" }],
@@ -566,12 +685,12 @@ test("steers and interrupts only an in-progress last turn with its ID filled in"
     requests
       .slice(before)
       .map((request) => request.method)
-      .toSorted(),
+      .toSorted((left, right) => left.localeCompare(right)),
     ["initialize", "initialize", "thread/read", "thread/read"]
   );
 });
 
-test("sends thin thread requests for fork, rename, goal, loaded list, and compaction", async (t) => {
+await test("sends thin thread requests for fork, rename, goal, loaded list, and compaction", async (t) => {
   const { client, requests } = await fixture(t, ({ message, reply }) => {
     reply(message.method === "thread/fork" ? { thread: { id: "forked" } } : {});
   });
@@ -580,7 +699,10 @@ test("sends thin thread requests for fork, rename, goal, loaded list, and compac
     name: "Fork",
     thread_id: "fixture-thread"
   });
-  assert.equal(forked.value.threadId, "forked");
+  assert.equal(
+    z.looseObject({ threadId: z.string() }).parse(forked.value).threadId,
+    "forked"
+  );
   const methods = () =>
     requests.map((request) => request.method).filter((m) => m !== "initialize");
   assert.deepEqual(methods(), ["thread/fork", "thread/name/set"]);
@@ -626,7 +748,7 @@ test("sends thin thread requests for fork, rename, goal, loaded list, and compac
   ]);
 });
 
-test("goal setter forwards empty objectives and preserves native rejection", async (t) => {
+await test("goal setter forwards empty objectives and preserves native rejection", async (t) => {
   const { client, requests } = await fixture(t, ({ message, reply, ws }) => {
     if (
       message.method === "thread/goal/set" &&
@@ -667,10 +789,12 @@ test("goal setter forwards empty objectives and preserves native rejection", asy
   });
 });
 
-test("derives every native tool with exact parameter schemas and conservative annotations", async (t) => {
+await test("derives every native tool with exact parameter schemas and conservative annotations", async (t) => {
   const { client, requests } = await fixture(
     t,
-    ({ reply }) => reply({ ok: true }),
+    ({ reply }) => {
+      reply({ ok: true });
+    },
     { catalog: CATALOG }
   );
   const { tools } = await client.listTools();
@@ -688,7 +812,7 @@ test("derives every native tool with exact parameter schemas and conservative an
     assert.match(tool.description, /writer/u);
     assert.equal(
       tool.annotations.destructiveHint,
-      !tool.annotations.readOnlyHint
+      tool.annotations.readOnlyHint !== true
     );
   }
   const readTool = tools.find((tool) => tool.name === "codex_fs_readFile");
@@ -725,39 +849,56 @@ test("derives every native tool with exact parameter schemas and conservative an
     })
   );
   const listed = await call(client, "codex_methods", { method: "thread/read" });
-  assert.equal(listed.value[0].tool, "codex_thread_read");
+  assert.equal(
+    discoveredMethods.parse(listed.value)[0].tool,
+    "codex_thread_read"
+  );
 });
 
-test("discovers definition-free catalogs with namespace-boundary filtering", async (t) => {
-  const { client } = await fixture(t, ({ reply }) => reply({}), {
-    catalog: {
-      oneOf: ["fs/readFile", "fsSection/readFile"].map((method) => ({
-        properties: { method: { enum: [method] }, params: { type: "object" } }
-      }))
+await test("discovers definition-free catalogs with namespace-boundary filtering", async (t) => {
+  const { client } = await fixture(
+    t,
+    ({ reply }) => {
+      reply({});
+    },
+    {
+      catalog: {
+        oneOf: ["fs/readFile", "fsSection/readFile"].map((method) => ({
+          properties: { method: { enum: [method] }, params: { type: "object" } }
+        }))
+      }
     }
-  });
+  );
   const { tools } = await client.listTools();
   assert.equal(tools.length, 16);
   await Promise.all(
     ["fs", "fs/"].map(async (prefix) => {
       const result = await call(client, "codex_methods", { prefix });
       assert.deepEqual(
-        result.value.map((entry) => entry.method),
+        discoveredMethods.parse(result.value).map((entry) => entry.method),
         ["fs/readFile"]
       );
     })
   );
 });
 
-test("retains curated tools when native parameter references are missing", async (t) => {
+await test("retains curated tools when native parameter references are missing", async (t) => {
   await Promise.all(
     [{ $ref: "#/definitions/Missing" }].map(async (params) => {
-      const { client } = await fixture(t, ({ reply }) => reply({}), {
-        catalog: {
-          definitions: {},
-          oneOf: [{ properties: { method: { enum: ["future/read"] }, params } }]
+      const { client } = await fixture(
+        t,
+        ({ reply }) => {
+          reply({});
+        },
+        {
+          catalog: {
+            definitions: {},
+            oneOf: [
+              { properties: { method: { enum: ["future/read"] }, params } }
+            ]
+          }
         }
-      });
+      );
       const { tools } = await client.listTools();
       assert.equal(tools.length, 14);
       assert.ok(!tools.some((tool) => tool.name === "codex_future_read"));
@@ -765,10 +906,12 @@ test("retains curated tools when native parameter references are missing", async
   );
 });
 
-test("preserves boolean property schema semantics in SDK-compatible input schemas", async (t) => {
+await test("preserves boolean property schema semantics in SDK-compatible input schemas", async (t) => {
   const { client, requests } = await fixture(
     t,
-    ({ reply }) => reply({ ok: true }),
+    ({ reply }) => {
+      reply({ ok: true });
+    },
     {
       catalog: {
         oneOf: [
@@ -809,7 +952,7 @@ test("preserves boolean property schema semantics in SDK-compatible input schema
   });
 });
 
-test("wraps null and union parameters without changing native validation or dispatch", async (t) => {
+await test("wraps null and union parameters without changing native validation or dispatch", async (t) => {
   const nullParams = { type: "null" };
   const unionParams = {
     oneOf: [
@@ -824,7 +967,9 @@ test("wraps null and union parameters without changing native validation or disp
   };
   const { client, requests } = await fixture(
     t,
-    ({ reply }) => reply({ ok: true }),
+    ({ reply }) => {
+      reply({ ok: true });
+    },
     {
       catalog: {
         definitions: { Choice: unionParams },
@@ -879,7 +1024,7 @@ test("wraps null and union parameters without changing native validation or disp
   assert.equal(requests.length, before);
 });
 
-test("maps ambiguous and reserved names uniquely and stably across catalog changes", async (t) => {
+await test("maps ambiguous and reserved names uniquely and stably across catalog changes", async (t) => {
   const methods = [
     "thread/goal/get",
     "a/b",
@@ -890,15 +1035,21 @@ test("maps ambiguous and reserved names uniquely and stably across catalog chang
     "method/new",
     `future/${"long".repeat(40)}`
   ];
-  const { client, schemaFile } = await fixture(t, ({ reply }) => reply({}), {
-    catalog: {
-      oneOf: methods.map((method) => ({
-        properties: { method: { enum: [method] } }
-      }))
+  const { client, schemaFile } = await fixture(
+    t,
+    ({ reply }) => {
+      reply({});
+    },
+    {
+      catalog: {
+        oneOf: methods.map((method) => ({
+          properties: { method: { enum: [method] } }
+        }))
+      }
     }
-  });
+  );
   const firstResult = await call(client, "codex_methods");
-  const first = firstResult.value;
+  const first = discoveredMethods.parse(firstResult.value);
   assert.equal(
     first.find((entry) => entry.method === "thread/goal/get").tool,
     "codex_thread_goal_get"
@@ -909,28 +1060,38 @@ test("maps ambiguous and reserved names uniquely and stably across catalog chang
   assert.ok(
     names.every((name) => name.length <= 128 && /^[A-Za-z0-9_]+$/u.test(name))
   );
-  const schemas = JSON.parse(await readFile(schemaFile, "utf-8"));
+  const schemas = z
+    .looseObject({
+      ClientRequest: z.looseObject({ oneOf: z.array(z.unknown()) })
+    })
+    .parse(JSON.parse(await readFile(schemaFile, "utf-8")));
   schemas.ClientRequest.oneOf.push({
     properties: { method: { enum: ["a-b"] } }
   });
   await writeFile(schemaFile, JSON.stringify(schemas));
   const secondResult = await call(client, "codex_methods");
-  const second = secondResult.value;
+  const second = discoveredMethods.parse(secondResult.value);
   assert.deepEqual(second.slice(0, first.length), first);
   assert.ok(!names.includes(second.at(-1).tool));
 });
 
-test("rejects duplicate native method names atomically", async (t) => {
+await test("rejects duplicate native method names atomically", async (t) => {
   const entry = { properties: { method: { enum: ["future/read"] } } };
-  const { client } = await fixture(t, ({ reply }) => reply({}), {
-    catalog: { oneOf: [entry, entry] }
-  });
+  const { client } = await fixture(
+    t,
+    ({ reply }) => {
+      reply({});
+    },
+    {
+      catalog: { oneOf: [entry, entry] }
+    }
+  );
   const { tools } = await client.listTools();
   assert.equal(tools.length, 14);
   assert.ok(!tools.some((tool) => tool.name === "codex_future_read"));
 });
 
-test("propagates daemon active-turn and writer refusals without retrying", async (t) => {
+await test("propagates daemon active-turn and writer refusals without retrying", async (t) => {
   await Promise.all(
     ["thread/resume", "turn/start"].map(async (method) => {
       const { client, requests } = await fixture(
@@ -971,16 +1132,22 @@ test("propagates daemon active-turn and writer refusals without retrying", async
   );
 });
 
-test("serves only curated tools when the schema catalog is unavailable", async (t) => {
-  const { client } = await fixture(t, ({ reply }) => reply({}), {
-    methods: "fs"
-  });
+await test("serves only curated tools when the schema catalog is unavailable", async (t) => {
+  const { client } = await fixture(
+    t,
+    ({ reply }) => {
+      reply({});
+    },
+    {
+      methods: "fs"
+    }
+  );
   const { tools } = await client.listTools();
   assert.equal(tools.length, 14);
   assert.ok(tools.some((tool) => tool.name === "codex_methods"));
 });
 
-test("queues active sends and delivers fresh turns in order, buffering early completion", async (t) => {
+await test("queues active sends and delivers fresh turns in order, buffering early completion", async (t) => {
   const threadId = "fixture-queued";
   const turns = [{ id: "active", status: "inProgress" }];
   const delivered = [];
@@ -991,7 +1158,7 @@ test("queues active sends and delivers fresh turns in order, buffering early com
         reply({ thread: { turns } });
       } else if (message.method === "turn/start") {
         assert.notEqual(turns.at(-1).status, "inProgress");
-        delivered.push(message.params.input[0].text);
+        delivered.push(turnInput.parse(message.params).input[0].text);
         const turn = { id: `fresh-${delivered.length}`, status: "completed" };
         turns.push(turn);
         ws.send(
@@ -1014,9 +1181,9 @@ test("queues active sends and delivers fresh turns in order, buffering early com
     text: "second",
     thread_id: threadId
   });
-  assert.equal(first.value.status, "queued");
-  assert.equal(second.value.status, "queued");
-  assert.ok(first.value.id);
+  assert.equal(queueReceipt.parse(first.value).status, "queued");
+  assert.equal(queueReceipt.parse(second.value).status, "queued");
+  assert.ok(queueReceipt.parse(first.value).id);
   assert.deepEqual(delivered, []);
   assert.ok(!requests.some((request) => request.method === "turn/steer"));
   turns[0].status = "completed";
@@ -1028,21 +1195,31 @@ test("queues active sends and delivers fresh turns in order, buffering early com
       })
     );
   }
-  await t.waitFor(() => assert.equal(delivered.length, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(delivered.length, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(delivered, ["first", "second"]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
   const receipt = await call(client, "codex_queue", { thread_id: threadId });
   assert.deepEqual(
-    receipt.value.messages.map((record) => record.status),
+    queueResult.parse(receipt.value).messages.map((record) => record.status),
     ["completed", "completed"]
   );
   assert.deepEqual(
-    receipt.value.messages.map((record) => record.turnId),
+    queueResult.parse(receipt.value).messages.map((record) => record.turnId),
     ["fresh-1", "fresh-2"]
   );
 });
 
-test("default steering queues and a known response.interrupt failure avoids explicit steering", async (t) => {
+await test("default steering queues and a known response.interrupt failure avoids explicit steering", async (t) => {
   const turns = [
     {
       error: {
@@ -1061,8 +1238,8 @@ test("default steering queues and a known response.interrupt failure avoids expl
     text: "later",
     thread_id: "fixture"
   });
-  assert.equal(queued.value.status, "queued");
-  assert.match(queued.value.reason, /response.interrupt/u);
+  assert.equal(queueReceipt.parse(queued.value).status, "queued");
+  assert.match(queueReceipt.parse(queued.value).reason, /response.interrupt/u);
   assert.ok(
     !requests.some(
       (request) =>
@@ -1073,11 +1250,17 @@ test("default steering queues and a known response.interrupt failure avoids expl
     action: "cancel",
     thread_id: "fixture"
   });
-  assert.equal(cancelled.value.messages[0].status, "refused");
-  assert.match(cancelled.value.messages[0].reason, /Cancelled/u);
+  assert.equal(
+    queueResult.parse(cancelled.value).messages[0].status,
+    "refused"
+  );
+  assert.match(
+    queueResult.parse(cancelled.value).messages[0].reason,
+    /Cancelled/u
+  );
 });
 
-test("detects unsupported steering responses and does not retry an ambiguous write", async (t) => {
+await test("detects unsupported steering responses and does not retry an ambiguous write", async (t) => {
   const { client, requests } = await fixture(t, ({ message, reply, ws }) => {
     if (message.method === "thread/read") {
       reply({ thread: { turns: [{ id: "active", status: "inProgress" }] } });
@@ -1100,8 +1283,11 @@ test("detects unsupported steering responses and does not retry an ambiguous wri
     text: "now",
     thread_id: "fixture"
   });
-  assert.equal(refused.value.status, "refused");
-  assert.equal(refused.value.unsupportedInterrupt, true);
+  const refusal = z
+    .looseObject({ status: z.string(), unsupportedInterrupt: z.boolean() })
+    .parse(refused.value);
+  assert.equal(refusal.status, "refused");
+  assert.equal(refusal.unsupportedInterrupt, true);
   assert.equal(
     requests.filter((request) => request.method === "turn/steer").length,
     1
@@ -1112,7 +1298,7 @@ test("detects unsupported steering responses and does not retry an ambiguous wri
     text: "later",
     thread_id: "fixture"
   });
-  assert.equal(later.value.status, "queued");
+  assert.equal(statusResult.parse(later.value).status, "queued");
   assert.equal(
     requests.filter((request) => request.method === "turn/steer").length,
     1
@@ -1120,7 +1306,7 @@ test("detects unsupported steering responses and does not retry an ambiguous wri
   await call(client, "codex_queue", { action: "cancel", thread_id: "fixture" });
 });
 
-test("unsupported-thread memory evicts the oldest IDs and retains recent queue fallbacks", async (t) => {
+await test("unsupported-thread memory evicts the oldest IDs and retains recent queue fallbacks", async (t) => {
   const { client, requests } = await fixture(t, ({ message, reply, ws }) => {
     if (message.method === "thread/read") {
       reply({
@@ -1149,6 +1335,7 @@ test("unsupported-thread memory evicts the oldest IDs and retains recent queue f
     { length: 129 },
     (_, index) => `thread-${index}`
   );
+  /** @param {number} index - Thread index. */
   const refuseThread = async (index) => {
     if (index < threadIds.length) {
       const threadId = threadIds[index];
@@ -1160,7 +1347,7 @@ test("unsupported-thread memory evicts the oldest IDs and retains recent queue f
             text: "attempt",
             thread_id: threadId
           });
-      assert.equal(refused.value.status, "refused");
+      assert.equal(statusResult.parse(refused.value).status, "refused");
       await refuseThread(index + 1);
     }
   };
@@ -1170,7 +1357,7 @@ test("unsupported-thread memory evicts the oldest IDs and retains recent queue f
     text: "retry",
     thread_id: threadIds[0]
   });
-  assert.equal(evicted.value.status, "refused");
+  assert.equal(statusResult.parse(evicted.value).status, "refused");
   assert.equal(
     requests.filter(
       ({ method, params }) =>
@@ -1184,7 +1371,7 @@ test("unsupported-thread memory evicts the oldest IDs and retains recent queue f
     text: "queue instead",
     thread_id: recent
   });
-  assert.equal(queued.value.status, "queued");
+  assert.equal(queueReceipt.parse(queued.value).status, "queued");
   assert.equal(
     requests.filter(
       ({ method, params }) =>
@@ -1202,7 +1389,7 @@ test("unsupported-thread memory evicts the oldest IDs and retains recent queue f
   await call(client, "codex_queue", { action: "cancel", thread_id: recent });
 });
 
-test("queue connection loss refuses undelivered messages without reconnecting", async (t) => {
+await test("queue connection loss refuses undelivered messages without reconnecting", async (t) => {
   const { client, connections, requests } = await fixture(
     t,
     ({ message, reply }) => {
@@ -1217,14 +1404,22 @@ test("queue connection loss refuses undelivered messages without reconnecting", 
   for (const ws of connections) {
     ws.close();
   }
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
   const receipt = await call(client, "codex_queue", { thread_id: "fixture" });
-  assert.equal(receipt.value.messages[0].status, "refused");
-  assert.match(receipt.value.messages[0].reason, /connection closed/u);
+  assert.equal(queueResult.parse(receipt.value).messages[0].status, "refused");
+  assert.match(
+    queueResult.parse(receipt.value).messages[0].reason,
+    /connection closed/u
+  );
   assert.ok(!requests.some((request) => request.method === "turn/start"));
 });
 
-test("queue writer refusal stops the batch without retrying or forcing another writer", async (t) => {
+await test("queue writer refusal stops the batch without retrying or forcing another writer", async (t) => {
   let active = true;
   const { client, connections, requests } = await fixture(
     t,
@@ -1262,17 +1457,25 @@ test("queue writer refusal stops the batch without retrying or forcing another w
       })
     );
   }
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
   const receipt = await call(client, "codex_queue", { thread_id: "fixture" });
-  assert.equal(receipt.value.messages[0].status, "refused");
-  assert.match(receipt.value.messages[0].reason, /active writer/u);
+  assert.equal(queueResult.parse(receipt.value).messages[0].status, "refused");
+  assert.match(
+    queueResult.parse(receipt.value).messages[0].reason,
+    /active writer/u
+  );
   assert.equal(
     requests.filter((request) => request.method === "turn/start").length,
     1
   );
 });
 
-test("queue rechecks a replacement active turn before delivery", async (t) => {
+await test("queue rechecks a replacement active turn before delivery", async (t) => {
   let turns = [{ id: "original", status: "inProgress" }];
   const { client, connections, requests } = await fixture(
     t,
@@ -1297,11 +1500,12 @@ test("queue rechecks a replacement active turn before delivery", async (t) => {
     );
   }
   await t.waitFor(
-    () =>
+    () => {
       assert.ok(
         requests.filter((request) => request.method === "thread/read").length >
           before
-      ),
+      );
+    },
     { timeout: 2000 }
   );
   assert.ok(!requests.some((request) => request.method === "turn/start"));
@@ -1309,14 +1513,14 @@ test("queue rechecks a replacement active turn before delivery", async (t) => {
     action: "cancel",
     thread_id: "fixture"
   });
-  assert.equal(receipt.value.messages[0].status, "refused");
+  assert.equal(queueResult.parse(receipt.value).messages[0].status, "refused");
 });
 
-test("refused server-initiated requests cannot wake queue delivery", async (t) => {
+await test("refused server-initiated requests cannot wake queue delivery", async (t) => {
   const { client, connections, requests } = await fixture(
     t,
     ({ message, reply }) => {
-      if (!message.error) {
+      if (message.error === undefined || message.error === null) {
         reply(
           message.method === "thread/read"
             ? { thread: { turns: [{ id: "active", status: "inProgress" }] } }
@@ -1342,14 +1546,15 @@ test("refused server-initiated requests cannot wake queue delivery", async (t) =
     );
   }
   await t.waitFor(
-    () =>
+    () => {
       assert.ok(
         requests.some(
           (request) =>
             request.id === "server-completion" &&
             request.error?.code === -32_601
         )
-      ),
+      );
+    },
     { timeout: 2000 }
   );
   assert.equal(
@@ -1359,7 +1564,7 @@ test("refused server-initiated requests cannot wake queue delivery", async (t) =
   await call(client, "codex_queue", { action: "cancel", thread_id: "fixture" });
 });
 
-test("an idle send waiting for completion permits authorized interruption of its active turn", async (t) => {
+await test("an idle send waiting for completion permits authorized interruption of its active turn", async (t) => {
   let active = false;
   const { client, connections, requests } = await fixture(
     t,
@@ -1398,19 +1603,20 @@ test("an idle send waiting for completion permits authorized interruption of its
     wait_seconds: 2
   });
   await t.waitFor(
-    () =>
-      assert.ok(requests.some((request) => request.method === "turn/start")),
+    () => {
+      assert.ok(requests.some((request) => request.method === "turn/start"));
+    },
     { timeout: 2000 }
   );
   const interrupted = await call(client, "codex_interrupt", {
     thread_id: "fixture"
   });
-  assert.equal(interrupted.value.status, "interrupted");
+  assert.equal(statusResult.parse(interrupted.value).status, "interrupted");
   const sent = await sending;
-  assert.equal(sent.value.status, "interrupted");
+  assert.equal(statusResult.parse(sent.value).status, "interrupted");
 });
 
-test("queue deadline bounds stalled initialization before delivery", async (t) => {
+await test("queue deadline bounds stalled initialization before delivery", async (t) => {
   const { requests, socket, connections } = await fixture(t, () => {}, {
     failInitialize: true
   });
@@ -1426,13 +1632,23 @@ test("queue deadline bounds stalled initialization before delivery", async (t) =
   });
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const queued = enqueueMessage("deadline-fixture", "pending text");
-  await t.waitFor(() => assert.equal(requests.length, 1), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(requests.length, 1);
+    },
+    { timeout: 2000 }
+  );
   t.mock.timers.tick(1_800_000);
   const result = await queued;
   assert.equal(result.status, "refused");
   assert.match(result.reason, /deadline expired/u);
   t.mock.timers.reset();
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(
     requests.map((request) => request.method),
     ["initialize"]
@@ -1443,10 +1659,12 @@ const direction = (method) => ({
   oneOf: [{ properties: { method: { enum: [method] } } }]
 });
 
-test("validates native parameters and keeps non-client directions discovery-only", async (t) => {
+await test("validates native parameters and keeps non-client directions discovery-only", async (t) => {
   const { client, requests } = await fixture(
     t,
-    ({ reply }) => reply({ ok: true }),
+    ({ reply }) => {
+      reply({ ok: true });
+    },
     {
       catalog: CATALOG,
       clientNotifications: direction("initialized"),
@@ -1476,7 +1694,10 @@ test("validates native parameters and keeps non-client directions discovery-only
       ["clientNotification", "initialized"]
     ].map(async ([kind, method]) => {
       const result = await call(client, "codex_methods", { kind, method });
-      assert.equal(result.value[0].tool, "discovery_only");
+      assert.equal(
+        discoveredMethods.parse(result.value)[0].tool,
+        "discovery_only"
+      );
     })
   );
   const valid = await call(client, "codex_config_write", {
@@ -1487,10 +1708,12 @@ test("validates native parameters and keeps non-client directions discovery-only
   assert.deepEqual(requests.at(-1).params, { extra: true, mode: "b" });
 });
 
-test("refreshes native tools and notifications on version and same-version schema changes", async (t) => {
+await test("refreshes native tools and notifications on version and same-version schema changes", async (t) => {
   const { client, requests, schemaFile, versionFile } = await fixture(
     t,
-    ({ reply }) => reply({ ok: true }),
+    ({ reply }) => {
+      reply({ ok: true });
+    },
     {
       catalog: {
         ...CATALOG,
@@ -1509,9 +1732,31 @@ test("refreshes native tools and notifications on version and same-version schem
   const before = await call(client, "codex_methods", {
     method: "config/write"
   });
-  assert.ok(JSON.stringify(before.value[0].params).length < 1000);
-  assert.equal(before.value[0].params.$defs.Unrelated, undefined);
-  const schemas = JSON.parse(await readFile(schemaFile, "utf-8"));
+  const beforeParams = z
+    .array(
+      z.looseObject({
+        params: z.looseObject({ $defs: z.record(z.string(), z.unknown()) })
+      })
+    )
+    .parse(before.value)[0].params;
+  assert.ok(JSON.stringify(beforeParams).length < 1000);
+  assert.equal(beforeParams.$defs.Unrelated, undefined);
+  const schemas = z
+    .looseObject({
+      ClientRequest: z.looseObject({
+        definitions: z.looseObject({
+          Mode: z.looseObject({ enum: z.array(z.string()) })
+        }),
+        oneOf: z.array(
+          z.looseObject({
+            properties: z.looseObject({
+              method: z.looseObject({ enum: z.array(z.string()) })
+            })
+          })
+        )
+      })
+    })
+    .parse(JSON.parse(await readFile(schemaFile, "utf-8")));
   schemas.ClientRequest.definitions.Mode.enum.push("future");
   schemas.ClientRequest.oneOf.push(
     {
@@ -1539,7 +1784,9 @@ test("refreshes native tools and notifications on version and same-version schem
   await writeFile(schemaFile, JSON.stringify(schemas));
   const { tools } = await client.listTools();
   assert.ok(tools.some((tool) => tool.name === "codex_future_new"));
-  await t.waitFor(() => assert.equal(changes, 1));
+  await t.waitFor(() => {
+    assert.equal(changes, 1);
+  });
   const updated = await call(client, "codex_config_write", { mode: "future" });
   assert.equal(updated.error, false);
   const requestCount = requests.length;
@@ -1561,7 +1808,9 @@ test("refreshes native tools and notifications on version and same-version schem
     mode: "future"
   });
   assert.equal(versionChanged.error, false);
-  await t.waitFor(() => assert.equal(changes, 2));
+  await t.waitFor(() => {
+    assert.equal(changes, 2);
+  });
   schemas.ClientRequest.oneOf = schemas.ClientRequest.oneOf.filter(
     (entry) => entry.properties.method.enum[0] !== "future/new"
   );
@@ -1572,10 +1821,12 @@ test("refreshes native tools and notifications on version and same-version schem
   assert.equal(refused.error, true);
 });
 
-test("refuses native calls offline when current schema validation is unavailable", async (t) => {
+await test("refuses native calls offline when current schema validation is unavailable", async (t) => {
   const { client, requests, versionFile } = await fixture(
     t,
-    ({ reply }) => reply({}),
+    ({ reply }) => {
+      reply({});
+    },
     { catalog: CATALOG }
   );
   await rm(versionFile);
@@ -1593,12 +1844,22 @@ test("refuses native calls offline when current schema validation is unavailable
   assert.equal(requests.length, 0);
 });
 
-test("rejects discovery after valid generation fails catalog derivation", async (t) => {
-  const { client, schemaFile } = await fixture(t, ({ reply }) => reply({}), {
-    catalog: CATALOG
-  });
+await test("rejects discovery after valid generation fails catalog derivation", async (t) => {
+  const { client, schemaFile } = await fixture(
+    t,
+    ({ reply }) => {
+      reply({});
+    },
+    {
+      catalog: CATALOG
+    }
+  );
   const before = await client.listTools();
-  const schemas = JSON.parse(await readFile(schemaFile, "utf-8"));
+  const schemas = z
+    .looseObject({
+      ClientRequest: z.looseObject({ oneOf: z.array(z.unknown()) })
+    })
+    .parse(JSON.parse(await readFile(schemaFile, "utf-8")));
   const method = { properties: { method: { enum: ["future/duplicate"] } } };
   schemas.ClientRequest.oneOf.push(method, method);
   await writeFile(schemaFile, JSON.stringify(schemas));
@@ -1609,10 +1870,12 @@ test("rejects discovery after valid generation fails catalog derivation", async 
   assert.deepEqual(after.tools, before.tools);
 });
 
-test("cancels native calls during schema refresh before opening a socket", async (t) => {
+await test("cancels native calls during schema refresh before opening a socket", async (t) => {
   const { client, requests, versionFile } = await fixture(
     t,
-    ({ reply }) => reply({}),
+    ({ reply }) => {
+      reply({});
+    },
     { catalog: CATALOG }
   );
   await writeFile(versionFile, "fixture-cli 2");
@@ -1629,7 +1892,7 @@ test("cancels native calls during schema refresh before opening a socket", async
   assert.equal(requests.length, 0);
 });
 
-test("cancellation closes a stalled native initialize connection without dispatching", async (t) => {
+await test("cancellation closes a stalled native initialize connection without dispatching", async (t) => {
   const { client, connections, requests } = await fixture(t, () => {}, {
     catalog: CATALOG,
     failInitialize: true
@@ -1641,10 +1904,20 @@ test("cancellation closes a stalled native initialize connection without dispatc
     { signal: controller.signal }
   );
   const rejected = assert.rejects(pending);
-  await t.waitFor(() => assert.equal(requests.length, 1), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(requests.length, 1);
+    },
+    { timeout: 2000 }
+  );
   controller.abort(new Error("Fixture cancellation"));
   await rejected;
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(
     requests.map((request) => request.method),
     ["initialize"]
@@ -1666,8 +1939,10 @@ const commandCatalog = {
   }))
 };
 
-test("keeps interactive command follow-ups on their originating connection and returns streamed output", async (t) => {
+await test("keeps interactive command follow-ups on their originating connection and returns streamed output", async (t) => {
+  /** @type {WebSocket | undefined} */
   let owner;
+  /** @type {((value: unknown) => void) | undefined} */
   let complete;
   const { client, connections, requests } = await fixture(
     t,
@@ -1690,7 +1965,7 @@ test("keeps interactive command follow-ups on their originating connection and r
               }
             })
           );
-          complete({ exitCode: 0, stderr: "", stdout: "" });
+          complete?.({ exitCode: 0, stderr: "", stdout: "" });
         }
       }
     },
@@ -1702,7 +1977,12 @@ test("keeps interactive command follow-ups on their originating connection and r
     streamStdin: true,
     streamStdoutStderr: true
   });
-  await t.waitFor(() => assert.ok(owner), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.ok(owner !== undefined);
+    },
+    { timeout: 2000 }
+  );
   const written = await call(client, "codex_command_exec_write", {
     deltaBase64: "eA==",
     processId: "fixture-process"
@@ -1720,10 +2000,21 @@ test("keeps interactive command follow-ups on their originating connection and r
   const result = await execution;
   assert.equal(result.error, false);
   assert.equal(
-    result.value.notifications[0].params.deltaBase64,
+    z
+      .looseObject({
+        notifications: z.array(
+          z.looseObject({ params: z.looseObject({ deltaBase64: z.string() }) })
+        )
+      })
+      .parse(result.value).notifications[0].params.deltaBase64,
     "Zml4dHVyZQ=="
   );
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
   assert.equal(
     requests.filter((request) => request.method === "initialize").length,
     1
@@ -1735,7 +2026,7 @@ test("keeps interactive command follow-ups on their originating connection and r
   assert.equal(connections.size, 0);
 });
 
-test("cancelling an active native command releases its connection and process identifier", async (t) => {
+await test("cancelling an active native command releases its connection and process identifier", async (t) => {
   const { client, connections, requests } = await fixture(t, () => {}, {
     catalog: commandCatalog
   });
@@ -1750,13 +2041,19 @@ test("cancelling an active native command releases its connection and process id
   );
   const rejected = assert.rejects(pending);
   await t.waitFor(
-    () =>
-      assert.ok(requests.some((request) => request.method === "command/exec")),
+    () => {
+      assert.ok(requests.some((request) => request.method === "command/exec"));
+    },
     { timeout: 2000 }
   );
   controller.abort(new Error("Fixture cancellation"));
   await rejected;
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
   const absent = await call(client, "codex_command_exec_write", {
     processId: "fixture-cancel"
   });
@@ -1768,7 +2065,8 @@ test("cancelling an active native command releases its connection and process id
   );
 });
 
-test("keeps watch notifications live until native unwatch or MCP transport closure", async (t) => {
+await test("keeps watch notifications live until native unwatch or MCP transport closure", async (t) => {
+  /** @type {WebSocket | undefined} */
   let owner;
   const { client, connections } = await fixture(
     t,
@@ -1795,31 +2093,50 @@ test("keeps watch notifications live until native unwatch or MCP transport closu
   });
   assert.equal(started.error, false);
   assert.equal(connections.size, 1);
-  owner.send(
-    JSON.stringify({
-      method: "fs/changed",
-      params: { paths: ["/fixture"], watchId: "fixture-watch" }
-    })
+  z.instanceof(WebSocket)
+    .parse(owner)
+    .send(
+      JSON.stringify({
+        method: "fs/changed",
+        params: { paths: ["/fixture"], watchId: "fixture-watch" }
+      })
+    );
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 1);
+    },
+    { timeout: 2000 }
   );
-  await t.waitFor(() => assert.equal(events.length, 1), { timeout: 2000 });
   const removed = await call(client, "codex_fs_unwatch", {
     watchId: "fixture-watch"
   });
   assert.equal(removed.error, false);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
   const watched = await call(client, "codex_fs_watch", {
     path: "/fixture",
     watchId: "fixture-watch"
   });
   assert.equal(watched.error, false);
   await client.close();
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("retains the last catalog atomically after a failed refresh and refuses stale validation", async (t) => {
+await test("retains the last catalog atomically after a failed refresh and refuses stale validation", async (t) => {
   const { client, requests, schemaFile } = await fixture(
     t,
-    ({ reply }) => reply({}),
+    ({ reply }) => {
+      reply({});
+    },
     { catalog: CATALOG }
   );
   const before = await client.listTools();
@@ -1831,8 +2148,10 @@ test("retains the last catalog atomically after a failed refresh and refuses sta
   assert.equal(requests.length, 0);
 });
 
-test("watch logging respects stdout backpressure and SDK closure releases sockets and drains", async (t) => {
-  const { socket, connections } = await fixture(t, ({ reply }) => reply({}));
+await test("watch logging respects stdout backpressure and SDK closure releases sockets and drains", async (t) => {
+  const { socket, connections } = await fixture(t, ({ reply }) => {
+    reply({});
+  });
   const previousSocket = process.env.CODEX_APP_SERVER_SOCKET;
   process.env.CODEX_APP_SERVER_SOCKET = socket;
   let finishWrite;
@@ -1843,7 +2162,7 @@ test("watch logging respects stdout backpressure and SDK closure releases socket
       finishWrite = done;
     }
   });
-  const server = new Server(
+  const { server } = new McpServer(
     { name: "fixture", version: "1" },
     { capabilities: { logging: {} } }
   );
@@ -1875,13 +2194,17 @@ test("watch logging respects stdout backpressure and SDK closure releases socket
   for (let count = 0; count < 200; count += 1) {
     owner.send(note);
   }
-  await t.waitFor(() => assert.equal(stdout.listenerCount("drain"), 1));
+  await t.waitFor(() => {
+    assert.equal(stdout.listenerCount("drain"), 1);
+  });
   const buffered = stdout.writableLength;
   await delay(50);
   assert.equal(stdout.writableLength, buffered);
   assert.equal(stdout.listenerCount("drain"), 1);
   stdin.write(Buffer.alloc(1025));
-  await t.waitFor(() => assert.equal(connections.size, 0));
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
   assert.equal(stdout.listenerCount("drain"), 0);
   assert.equal(stdin.readableEnded, false);
   await assert.rejects(
@@ -1893,6 +2216,10 @@ test("watch logging respects stdout backpressure and SDK closure releases socket
 
 /**
  * Run the packaged monitor against the same fixture socket and decode line events.
+ * @param {import("node:test").TestContext} context - Test owner of the monitor.
+ * @param {string} socket - Fixture socket path.
+ * @param {string[]} args - Monitor command arguments.
+ * @param {NodeJS.ProcessEnv} env - Additional environment variables.
  */
 const monitor = (context, socket, args, env = {}) => {
   const child = spawn(process.execPath, [monitorPath, ...args], {
@@ -1905,14 +2232,26 @@ const monitor = (context, socket, args, env = {}) => {
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
+  /** @type {Record<string, unknown>[]} */
   const events = [];
   let buffered = "";
-  child.stdout.on("data", (bytes) => {
+  /** @param {Buffer} bytes - Monitor output. */
+  const readOutput = (bytes) => {
     buffered += bytes.toString();
     const lines = buffered.split("\n");
     buffered = lines.pop();
-    events.push(...lines.filter(Boolean).map((line) => JSON.parse(line)));
-  });
+    events.push(
+      ...lines.filter(Boolean).map((line) => {
+        /** @type {unknown} */
+        const event = JSON.parse(line);
+        assert.ok(
+          event !== null && typeof event === "object" && !Array.isArray(event)
+        );
+        return event;
+      })
+    );
+  };
+  child.stdout.on("data", readOutput);
   const exited = once(child, "close");
   context.after(async () => {
     if (child.exitCode === null && child.signalCode === null) {
@@ -1923,7 +2262,7 @@ const monitor = (context, socket, args, env = {}) => {
   return { child, events, exited };
 };
 
-test("packaged monitor watches configured native transitions and classifies terminal failures", async (t) => {
+await test("packaged monitor watches configured native transitions and classifies terminal failures", async (t) => {
   let status = "active";
   let turn = { id: "initial", status: "inProgress" };
   const { connections, requests, socket } = await fixture(
@@ -1942,9 +2281,15 @@ test("packaged monitor watches configured native transitions and classifies term
     "--thread",
     "watched"
   ]);
-  await t.waitFor(() => assert.equal(events[0]?.status, "active"), {
-    timeout: 2000
-  });
+  await t.waitFor(
+    () => {
+      assert.equal(events[0]?.status, "active");
+    },
+    {
+      timeout: 2000
+    }
+  );
+  /** @param {Record<string, unknown>} params - Notification parameters. */
   const notify = (params) => {
     for (const ws of connections) {
       ws.send(JSON.stringify({ method: "thread/status/changed", params }));
@@ -1960,13 +2305,14 @@ test("packaged monitor watches configured native transitions and classifies term
     );
   }
   await t.waitFor(
-    () =>
+    () => {
       assert.ok(
         requests.some(
           (request) =>
             request.id === "server-status" && request.error?.code === -32_601
         )
-      ),
+      );
+    },
     { timeout: 2000 }
   );
   assert.equal(events.length, 1);
@@ -1978,22 +2324,32 @@ test("packaged monitor watches configured native transitions and classifies term
     status: "failed"
   };
   notify({ status: { type: "idle" }, threadId: "watched" });
-  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 3);
+    },
+    { timeout: 2000 }
+  );
   notify({ status: { type: "idle" }, threadId: "watched" });
   notify({ status: { type: "notLoaded" }, threadId: "watched" });
   notify({ status: { type: "systemError" }, threadId: "watched" });
-  await t.waitFor(() => assert.equal(events.length, 4), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 4);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(
     events.map((event) => event.status),
     ["active", "failed", "idle", "systemError"]
   );
-  assert.equal(events.at(-1).previous, "notLoaded");
+  assert.equal(events.at(-1)?.previous, "notLoaded");
   assert.equal(events[1].turnId, "initial");
   assert.ok(events.every((event) => event.threadId === "watched"));
   assert.ok(
     requests.every(
       (request) =>
-        request.error ||
+        (request.error !== undefined && request.error !== null) ||
         [
           "initialize",
           "thread/read",
@@ -2004,10 +2360,16 @@ test("packaged monitor watches configured native transitions and classifies term
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor excludes unloaded activity while preserving subsequent failure events", async (t) => {
+await test("monitor excludes unloaded activity while preserving subsequent failure events", async (t) => {
+  /** @type {{id: string, status: string, error: object} | null} */
   let turn = null;
   const { connections, requests, socket } = await fixture(
     t,
@@ -2015,7 +2377,7 @@ test("monitor excludes unloaded activity while preserving subsequent failure eve
       reply(
         message.method === "thread/read"
           ? { thread: { status: { type: "notLoaded" } } }
-          : { data: turn ? [turn] : [] }
+          : { data: turn === null ? [] : [turn] }
       );
     }
   );
@@ -2026,11 +2388,12 @@ test("monitor excludes unloaded activity while preserving subsequent failure eve
     "watched"
   ]);
   await t.waitFor(
-    () =>
-      assert.ok(requests.some((request) => request.method === "thread/read")),
+    () => {
+      assert.ok(requests.some((request) => request.method === "thread/read"));
+    },
     { timeout: 2000 }
   );
-  assert.deepEqual(events, []);
+  assert.equal(events.length, 0);
   const [owner] = connections;
   turn = {
     error: { code: "model_not_found" },
@@ -2043,7 +2406,12 @@ test("monitor excludes unloaded activity while preserving subsequent failure eve
       params: { status: { type: "idle" }, threadId: "watched" }
     })
   );
-  await t.waitFor(() => assert.equal(events.length, 1), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 1);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(
     events.map(({ event, previous, status }) => ({ event, previous, status })),
     [{ event: "turnError", previous: "notLoaded", status: "failed" }]
@@ -2068,7 +2436,12 @@ test("monitor excludes unloaded activity while preserving subsequent failure eve
       }
     })
   );
-  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.equal(events[1].event, "turnError");
   assert.equal(events[1].previous, "notLoaded");
   assert.equal(events[1].status, "failed");
@@ -2080,19 +2453,24 @@ test("monitor excludes unloaded activity while preserving subsequent failure eve
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor status filters and startup deadlines preserve read-only behavior", async (t) => {
-  const { connections, requests, socket } = await fixture(t, ({ reply }) =>
+await test("monitor status filters and startup deadlines preserve read-only behavior", async (t) => {
+  const { connections, requests, socket } = await fixture(t, ({ reply }) => {
     reply({
       thread: {
         name: "Synthetic selection",
         status: { type: "idle" },
         turns: []
       }
-    })
-  );
+    });
+  });
   const { events, exited } = monitor(t, socket, [
     "--include-initial",
     "--thread",
@@ -2103,8 +2481,9 @@ test("monitor status filters and startup deadlines preserve read-only behavior",
     "0.4"
   ]);
   await t.waitFor(
-    () =>
-      assert.ok(requests.some((request) => request.method === "thread/read")),
+    () => {
+      assert.ok(requests.some((request) => request.method === "thread/read"));
+    },
     { timeout: 2000 }
   );
   for (const ws of connections) {
@@ -2122,29 +2501,32 @@ test("monitor status filters and startup deadlines preserve read-only behavior",
   );
 });
 
-test("wildcard monitor snapshots every loaded page and reports distinct turn errors without unchanged events", async (t) => {
+await test("wildcard monitor snapshots every loaded page and reports distinct turn errors without unchanged events", async (t) => {
   const error = { code: "model_not_found", message: "Fixture model is absent" };
   const { connections, requests, socket } = await fixture(
     t,
     ({ message, reply }) => {
       if (message.method === "thread/loaded/list") {
         reply(
-          message.params.cursor
-            ? { data: ["second", "third"], nextCursor: null }
-            : { data: ["first"], nextCursor: "next-page" }
+          (monitorParams.parse(message.params).cursor ?? "") === ""
+            ? { data: ["first"], nextCursor: "next-page" }
+            : { data: ["second", "third"], nextCursor: null }
         );
       } else if (message.method === "thread/read") {
         reply({
           thread: {
             status: {
-              type: message.params.threadId === "third" ? "systemError" : "idle"
+              type:
+                monitorParams.parse(message.params).threadId === "third"
+                  ? "systemError"
+                  : "idle"
             }
           }
         });
       } else {
         reply({
           data:
-            message.params.threadId === "second"
+            monitorParams.parse(message.params).threadId === "second"
               ? [{ error, id: "initial-failure", status: "failed" }]
               : []
         });
@@ -2163,7 +2545,12 @@ test("wildcard monitor snapshots every loaded page and reports distinct turn err
     "--status",
     "systemError"
   ]);
-  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 3);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(
     requests
       .filter((request) => request.method === "thread/loaded/list")
@@ -2202,7 +2589,12 @@ test("wildcard monitor snapshots every loaded page and reports distinct turn err
       })
     );
   }
-  await t.waitFor(() => assert.equal(events.length, 5), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 5);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(
     events
       .filter((event) => event.event === "turnError")
@@ -2216,10 +2608,15 @@ test("wildcard monitor snapshots every loaded page and reports distinct turn err
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor deduplicates snapshot failures across an older startup notification backlog", async (t) => {
+await test("monitor deduplicates snapshot failures across an older startup notification backlog", async (t) => {
   const error = { code: "model_not_found", message: "Fixture model is absent" };
   let injected = false;
   const { connections, socket } = await fixture(
@@ -2253,7 +2650,9 @@ test("monitor deduplicates snapshot failures across an older startup notificatio
     "--thread",
     "watched"
   ]);
-  await t.waitFor(() => assert.equal(events.length, 3));
+  await t.waitFor(() => {
+    assert.equal(events.length, 3);
+  });
   assert.equal(events[0].event, "threadStatus");
   assert.equal(events[0].previous, null);
   assert.equal(events[0].status, "idle");
@@ -2278,7 +2677,9 @@ test("monitor deduplicates snapshot failures across an older startup notificatio
       params: { status: "idle", threadId: "watched" }
     })
   );
-  await t.waitFor(() => assert.equal(events.length, 4));
+  await t.waitFor(() => {
+    assert.equal(events.length, 4);
+  });
   await delay(50);
   assert.deepEqual(
     events
@@ -2288,17 +2689,20 @@ test("monitor deduplicates snapshot failures across an older startup notificatio
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0));
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
 });
 
 for (const includePreviousNotLoaded of [false, true]) {
-  test(`monitor selects unloaded terminal successes separately and retains fresh failures: ${includePreviousNotLoaded}`, async (t) => {
+  void test(`monitor selects unloaded terminal successes separately and retains fresh failures: ${includePreviousNotLoaded}`, async (t) => {
     let turn = {
       completedAt: 0,
       id: "historical",
       items: [],
       status: "failed"
     };
+    /** @type {string | null} */
     let name = null;
     const { connections, requests, socket } = await fixture(
       t,
@@ -2319,19 +2723,21 @@ for (const includePreviousNotLoaded of [false, true]) {
       "*",
       ...(includePreviousNotLoaded ? ["--include-previous-not-loaded"] : [])
     ]);
-    await t.waitFor(() =>
-      assert.ok(requests.some(({ method }) => method === "thread/read"))
-    );
+    await t.waitFor(() => {
+      assert.ok(requests.some(({ method }) => method === "thread/read"));
+    });
     await delay(30);
-    assert.deepEqual(events, []);
+    assert.equal(events.length, 0);
     const [owner] = connections;
-    const terminal = (completed) =>
+    /** @param {unknown} completed - Completed turn. */
+    const terminal = (completed) => {
       owner.send(
         JSON.stringify({
           method: "turn/completed",
           params: { threadId: "watched", turn: completed }
         })
       );
+    };
     terminal({
       id: "loaded-result",
       items: [
@@ -2357,14 +2763,14 @@ for (const includePreviousNotLoaded of [false, true]) {
     };
     terminal(turn);
     terminal(turn);
-    await t.waitFor(() =>
-      assert.equal(events.length, includePreviousNotLoaded ? 2 : 1)
-    );
-    assert.equal(events.at(-1).event, "turnError");
-    assert.equal(events.at(-1).previous, "notLoaded");
-    assert.equal(events.at(-1).finalMessage, null);
-    assert.equal(events.at(-1).threadName, null);
-    assert.deepEqual(events.at(-1).error, { message: "Synthetic failure" });
+    await t.waitFor(() => {
+      assert.equal(events.length, includePreviousNotLoaded ? 2 : 1);
+    });
+    assert.equal(events.at(-1)?.event, "turnError");
+    assert.equal(events.at(-1)?.previous, "notLoaded");
+    assert.equal(events.at(-1)?.finalMessage, null);
+    assert.equal(events.at(-1)?.threadName, null);
+    assert.deepEqual(events.at(-1)?.error, { message: "Synthetic failure" });
     if (includePreviousNotLoaded) {
       assert.equal(events[0].event, "turnCompleted");
       assert.equal(events[0].previous, "notLoaded");
@@ -2384,15 +2790,15 @@ for (const includePreviousNotLoaded of [false, true]) {
         params: { status: { type: "systemError" }, threadId: "watched" }
       })
     );
-    await t.waitFor(() =>
-      assert.equal(events.length, includePreviousNotLoaded ? 4 : 3)
-    );
-    assert.equal(events.at(-2).turnId, "distinct-failure");
-    assert.equal(events.at(-2).finalMessage, null);
-    assert.equal(events.at(-2).threadName, name);
-    assert.equal(events.at(-1).status, "systemError");
-    assert.equal(events.at(-1).previous, "notLoaded");
-    assert.equal(events.at(-1).threadName, name);
+    await t.waitFor(() => {
+      assert.equal(events.length, includePreviousNotLoaded ? 4 : 3);
+    });
+    assert.equal(events.at(-2)?.turnId, "distinct-failure");
+    assert.equal(events.at(-2)?.finalMessage, null);
+    assert.equal(events.at(-2)?.threadName, name);
+    assert.equal(events.at(-1)?.status, "systemError");
+    assert.equal(events.at(-1)?.previous, "notLoaded");
+    assert.equal(events.at(-1)?.threadName, name);
     owner.send(
       JSON.stringify({
         method: "thread/status/changed",
@@ -2405,12 +2811,12 @@ for (const includePreviousNotLoaded of [false, true]) {
         params: { status: { type: "idle" }, threadId: "watched" }
       })
     );
-    await t.waitFor(() =>
+    await t.waitFor(() => {
       assert.equal(
         requests.filter(({ method }) => method === "thread/turns/list").length,
         2
-      )
-    );
+      );
+    });
     await delay(30);
     assert.equal(
       events.filter(({ turnId }) => turnId === "fresh-failure").length,
@@ -2419,13 +2825,15 @@ for (const includePreviousNotLoaded of [false, true]) {
     assert.equal(events.length, includePreviousNotLoaded ? 5 : 3);
     child.kill("SIGTERM");
     assert.deepEqual(await exited, [0, null]);
-    await t.waitFor(() => assert.equal(connections.size, 0));
+    await t.waitFor(() => {
+      assert.equal(connections.size, 0);
+    });
   });
 }
 
 for (const selection of ["*", "watched"]) {
   for (const explicitStatuses of [false, true]) {
-    test(`monitor hides unloaded activity but preserves a real completion: ${selection}/${explicitStatuses}`, async (t) => {
+    void test(`monitor hides unloaded activity but preserves a real completion: ${selection}/${explicitStatuses}`, async (t) => {
       let turn = { completedAt: 0, id: "historical", status: "failed" };
       const { connections, requests, socket } = await fixture(
         t,
@@ -2461,29 +2869,31 @@ for (const selection of ["*", "watched"]) {
             ]
           : [])
       ]);
-      await t.waitFor(() =>
-        assert.ok(requests.some(({ method }) => method === "thread/read"))
-      );
+      await t.waitFor(() => {
+        assert.ok(requests.some(({ method }) => method === "thread/read"));
+      });
       await delay(30);
-      assert.deepEqual(events, []);
+      assert.equal(events.length, 0);
       const [owner] = connections;
-      const notify = (type) =>
+      /** @param {string} type - Status type. */
+      const notify = (type) => {
         owner.send(
           JSON.stringify({
             method: "thread/status/changed",
             params: { status: { type }, threadId: "watched" }
           })
         );
+      };
       notify("idle");
-      await t.waitFor(() =>
+      await t.waitFor(() => {
         assert.equal(
           requests.filter(({ method }) => method === "thread/turns/list")
             .length,
           2
-        )
-      );
+        );
+      });
       await delay(30);
-      assert.deepEqual(events, []);
+      assert.equal(events.length, 0);
       notify("notLoaded");
       notify("active");
       turn = {
@@ -2504,7 +2914,9 @@ for (const selection of ["*", "watched"]) {
         })
       );
       notify("idle");
-      await t.waitFor(() => assert.equal(events.length, 2));
+      await t.waitFor(() => {
+        assert.equal(events.length, 2);
+      });
       assert.deepEqual(
         events.map(({ event, previous, status, threadName }) => ({
           event,
@@ -2531,15 +2943,18 @@ for (const selection of ["*", "watched"]) {
       assert.equal(events[0].finalMessage, "Synthetic completed answer");
       child.kill("SIGTERM");
       assert.deepEqual(await exited, [0, null]);
-      await t.waitFor(() => assert.equal(connections.size, 0));
+      await t.waitFor(() => {
+        assert.equal(connections.size, 0);
+      });
     });
   }
 }
 
 for (const includeInitial of [false, true]) {
   for (const outcome of ["failed", "completed"]) {
-    test(`monitor never replays timestamp-qualified historical startup backlogs: ${includeInitial}/${outcome}`, async (t) => {
+    void test(`monitor never replays timestamp-qualified historical startup backlogs: ${includeInitial}/${outcome}`, async (t) => {
       let injected = false;
+      /** @param {string} id - Turn ID. */
       const historical = (id) => ({
         completedAt: 0,
         id,
@@ -2581,9 +2996,9 @@ for (const includeInitial of [false, true]) {
         "--thread",
         "*"
       ]);
-      await t.waitFor(() =>
-        assert.ok(requests.some(({ method }) => method === "thread/read"))
-      );
+      await t.waitFor(() => {
+        assert.ok(requests.some(({ method }) => method === "thread/read"));
+      });
       const [owner] = connections;
       owner.send(
         JSON.stringify({
@@ -2591,7 +3006,9 @@ for (const includeInitial of [false, true]) {
           params: { status: "active", threadId: "watched" }
         })
       );
-      await t.waitFor(() => assert.equal(events.at(-1)?.status, "active"));
+      await t.waitFor(() => {
+        assert.equal(events.at(-1)?.status, "active");
+      });
       assert.equal(events.length, includeInitial ? 2 : 1);
       assert.ok(events.every(({ event }) => event === "threadStatus"));
       const fresh = {
@@ -2634,13 +3051,15 @@ for (const includeInitial of [false, true]) {
           params: { status: "idle", threadId: "watched" }
         })
       );
-      await t.waitFor(() =>
+      await t.waitFor(() => {
         assert.deepEqual(
           { event: events.at(-1)?.event, status: events.at(-1)?.status },
           { event: "threadStatus", status: "idle" }
-        )
+        );
+      });
+      const terminals = events.filter(
+        ({ turnId }) => typeof turnId === "string" && turnId !== ""
       );
-      const terminals = events.filter(({ turnId }) => turnId);
       assert.equal(terminals.length, 1);
       assert.equal(terminals[0].turnId, fresh.id);
       assert.equal(terminals[0].previous, "active");
@@ -2651,12 +3070,14 @@ for (const includeInitial of [false, true]) {
       );
       child.kill("SIGTERM");
       assert.deepEqual(await exited, [0, null]);
-      await t.waitFor(() => assert.equal(connections.size, 0));
+      await t.waitFor(() => {
+        assert.equal(connections.size, 0);
+      });
     });
   }
 }
 
-test("monitor backpressure stops notification work and cancellation releases both read-only sockets", async (t) => {
+await test("monitor backpressure stops notification work and cancellation releases both read-only sockets", async (t) => {
   const { connections, requests, socket } = await fixture(
     t,
     ({ message, reply }) => {
@@ -2685,7 +3106,11 @@ test("monitor backpressure stops notification work and cancellation releases bot
         threadIds: ["backpressure"]
       });
     } catch (error) {
-      assert.equal(stop.signal.aborted, true, error.message);
+      assert.equal(
+        stop.signal.aborted,
+        true,
+        error instanceof Error ? error.message : "Monitor failed"
+      );
     }
   })();
   t.after(async () => {
@@ -2697,7 +3122,9 @@ test("monitor backpressure stops notification work and cancellation releases bot
       process.env.CODEX_APP_SERVER_SOCKET = previousSocket;
     }
   });
-  await t.waitFor(() => assert.equal(events.length, 1));
+  await t.waitFor(() => {
+    assert.equal(events.length, 1);
+  });
   assert.equal(connections.size, 2);
   const reads = requests.length;
   const [owner] = connections;
@@ -2714,37 +3141,46 @@ test("monitor backpressure stops notification work and cancellation releases bot
   assert.equal(requests.length, reads);
   stop.abort();
   await done;
-  await t.waitFor(() => assert.equal(connections.size, 0));
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
   assert.equal(events.length, 1);
 });
 
-test("monitor reports socket loss as a transport systemError and exits without reconnecting", async (t) => {
-  const { connections, socket } = await fixture(t, ({ reply }) =>
+await test("monitor reports socket loss as a transport systemError and exits without reconnecting", async (t) => {
+  const { connections, socket } = await fixture(t, ({ reply }) => {
     reply({
       thread: {
         name: "Synthetic selection",
         status: { type: "idle" },
         turns: []
       }
-    })
-  );
+    });
+  });
   const { events, exited } = monitor(t, socket, [
     "--include-initial",
     "--thread",
     "watched"
   ]);
-  await t.waitFor(() => assert.equal(events.length, 1), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 1);
+    },
+    { timeout: 2000 }
+  );
   for (const ws of connections) {
     ws.close();
   }
   assert.deepEqual(await exited, [1, null]);
-  assert.equal(events.at(-1).event, "transport");
-  assert.equal(events.at(-1).status, "systemError");
-  assert.equal(events.at(-1).threadId, null);
+  assert.equal(events.at(-1)?.event, "transport");
+  assert.equal(events.at(-1)?.status, "systemError");
+  assert.equal(events.at(-1)?.threadId, null);
 });
 
-test("monitor validates configuration before connecting and is disabled without watched threads", async (t) => {
-  const { requests, socket } = await fixture(t, ({ reply }) => reply({}));
+await test("monitor validates configuration before connecting and is disabled without watched threads", async (t) => {
+  const { requests, socket } = await fixture(t, ({ reply }) => {
+    reply({});
+  });
   await Promise.all(
     [
       ["--thread", "watched", "--status", "invalid"],
@@ -2766,16 +3202,16 @@ test("monitor validates configuration before connecting and is disabled without 
   assert.equal(requests.length, 0);
 });
 
-test("explicit notLoaded filtering emits configured snapshots without widening selection", async (t) => {
-  const { requests, connections, socket } = await fixture(t, ({ reply }) =>
+await test("explicit notLoaded filtering emits configured snapshots without widening selection", async (t) => {
+  const { requests, connections, socket } = await fixture(t, ({ reply }) => {
     reply({
       thread: {
         name: "Synthetic selection",
         status: { type: "notLoaded" },
         turns: []
       }
-    })
-  );
+    });
+  });
   const { events, exited } = monitor(
     t,
     socket,
@@ -2796,24 +3232,29 @@ test("explicit notLoaded filtering emits configured snapshots without widening s
       ...new Set(
         requests
           .filter((request) => request.method !== "initialize")
-          .map((request) => request.params.threadId)
+          .map((request) => monitorParams.parse(request.params).threadId)
       )
     ],
     ["first", "second"]
   );
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("explicit monitor arguments override environment selection and filters", async (t) => {
-  const { requests, connections, socket } = await fixture(t, ({ reply }) =>
+await test("explicit monitor arguments override environment selection and filters", async (t) => {
+  const { requests, connections, socket } = await fixture(t, ({ reply }) => {
     reply({
       thread: {
         name: "Synthetic selection",
         status: { type: "idle" },
         turns: []
       }
-    })
-  );
+    });
+  });
   const { events, exited } = monitor(
     t,
     socket,
@@ -2839,14 +3280,21 @@ test("explicit monitor arguments override environment selection and filters", as
     requests.every(
       (request) =>
         request.method === "initialize" ||
-        request.params.threadId === "explicit"
+        monitorParams.parse(request.params).threadId === "explicit"
     )
   );
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("configured monitor reports an unavailable socket as a genuine startup failure", async (t) => {
-  const { socket, requests } = await fixture(t, ({ reply }) => reply({}));
+await test("configured monitor reports an unavailable socket as a genuine startup failure", async (t) => {
+  const { socket, requests } = await fixture(t, ({ reply }) => {
+    reply({});
+  });
   const { events, exited } = monitor(t, `${socket}.absent`, [
     "--thread",
     "watched"
@@ -2859,16 +3307,16 @@ test("configured monitor reports an unavailable socket as a genuine startup fail
   assert.equal(requests.length, 0);
 });
 
-test("filtered idle monitor remains quiet until its bounded deadline and closes both sockets", async (t) => {
-  const { connections, requests, socket } = await fixture(t, ({ reply }) =>
+await test("filtered idle monitor remains quiet until its bounded deadline and closes both sockets", async (t) => {
+  const { connections, requests, socket } = await fixture(t, ({ reply }) => {
     reply({
       thread: {
         name: "Synthetic selection",
         status: { type: "idle" },
         turns: []
       }
-    })
-  );
+    });
+  });
   const { events, exited } = monitor(t, socket, [
     "--include-initial",
     "--thread",
@@ -2880,14 +3328,24 @@ test("filtered idle monitor remains quiet until its bounded deadline and closes 
     "--timeout-seconds",
     "0.4"
   ]);
-  await t.waitFor(() => assert.equal(connections.size, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(await exited, [0, null]);
-  assert.deepEqual(events, []);
+  assert.equal(events.length, 0);
   assert.ok(requests.some((request) => request.method === "thread/read"));
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor deadline cancels a stalled initialize handshake and closes its socket", async (t) => {
+await test("monitor deadline cancels a stalled initialize handshake and closes its socket", async (t) => {
   const { connections, socket } = await fixture(t, () => {}, {
     failInitialize: true
   });
@@ -2900,11 +3358,16 @@ test("monitor deadline cancels a stalled initialize handshake and closes its soc
     "0.1"
   ]);
   assert.deepEqual(await exited, [0, null]);
-  assert.deepEqual(events, []);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  assert.equal(events.length, 0);
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor isolates failed thread inspections while other selected threads keep emitting", async (t) => {
+await test("monitor isolates failed thread inspections while other selected threads keep emitting", async (t) => {
   const { socket, connections, requests } = await fixture(
     t,
     ({ message, reply, ws }) => {
@@ -2930,7 +3393,12 @@ test("monitor isolates failed thread inspections while other selected threads ke
     "--thread",
     "watched"
   ]);
-  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.ok(
     events.some(
       (event) => event.event === "inspection" && event.threadId === "missing"
@@ -2944,9 +3412,14 @@ test("monitor isolates failed thread inspections while other selected threads ke
       })
     );
   }
-  await t.waitFor(() => assert.equal(events.at(-1).status, "active"), {
-    timeout: 2000
-  });
+  await t.waitFor(
+    () => {
+      assert.equal(events.at(-1)?.status, "active");
+    },
+    {
+      timeout: 2000
+    }
+  );
   assert.ok(events.every((event) => event.event !== "transport"));
   for (const entry of requests.filter(
     (request) => request.method === "thread/turns/list"
@@ -2955,7 +3428,7 @@ test("monitor isolates failed thread inspections while other selected threads ke
       itemsView: "notLoaded",
       limit: 1,
       sortDirection: "desc",
-      threadId: entry.params.threadId
+      threadId: monitorParams.parse(entry.params).threadId
     });
   }
   assert.ok(
@@ -2967,7 +3440,7 @@ test("monitor isolates failed thread inspections while other selected threads ke
   assert.deepEqual(await exited, [0, null]);
 });
 
-test("monitor drops startup notifications after cancellation", async (t) => {
+await test("monitor drops startup notifications after cancellation", async (t) => {
   const { socket, requests, connections } = await fixture(
     t,
     ({ message, connections: targets }) => {
@@ -2992,27 +3465,36 @@ test("monitor drops startup notifications after cancellation", async (t) => {
     "watched"
   ]);
   await t.waitFor(
-    () =>
+    () => {
       assert.ok(
         requests.some((request) => request.method === "thread/turns/list")
-      ),
+      );
+    },
     { timeout: 2000 }
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  assert.deepEqual(events, []);
+  assert.equal(events.length, 0);
   assert.deepEqual(
     requests.map((request) => request.method),
     ["initialize", "initialize", "thread/turns/list"]
   );
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("wildcard monitor preserves partial snapshots after a loaded-page refusal", async (t) => {
+await test("wildcard monitor preserves partial snapshots after a loaded-page refusal", async (t) => {
   const { connections, requests, socket } = await fixture(
     t,
     ({ message, reply, ws }) => {
-      if (message.method === "thread/loaded/list" && message.params.cursor) {
+      if (
+        message.method === "thread/loaded/list" &&
+        (monitorParams.parse(message.params).cursor ?? "") !== ""
+      ) {
         ws.send(
           JSON.stringify({
             error: { code: -32_000, message: "Page unavailable" },
@@ -3034,7 +3516,12 @@ test("wildcard monitor preserves partial snapshots after a loaded-page refusal",
     "--thread",
     "*"
   ]);
-  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.ok(
     events.some(
       (event) => event.event === "inspection" && event.threadId === null
@@ -3053,9 +3540,14 @@ test("wildcard monitor preserves partial snapshots after a loaded-page refusal",
       })
     );
   }
-  await t.waitFor(() => assert.equal(events.at(-1)?.threadId, "later"), {
-    timeout: 2000
-  });
+  await t.waitFor(
+    () => {
+      assert.equal(events.at(-1)?.threadId, "later");
+    },
+    {
+      timeout: 2000
+    }
+  );
   assert.equal(
     requests.filter((request) => request.method === "thread/loaded/list")
       .length,
@@ -3065,7 +3557,7 @@ test("wildcard monitor preserves partial snapshots after a loaded-page refusal",
   assert.deepEqual(await exited, [0, null]);
 });
 
-test("wildcard monitor stops a repeated cursor while retaining discovered threads", async (t) => {
+await test("wildcard monitor stops a repeated cursor while retaining discovered threads", async (t) => {
   const { requests, socket } = await fixture(t, ({ message, reply }) => {
     if (message.method === "thread/loaded/list") {
       reply({ data: ["watched"], nextCursor: "repeated" });
@@ -3081,7 +3573,12 @@ test("wildcard monitor stops a repeated cursor while retaining discovered thread
     "--thread",
     "*"
   ]);
-  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.match(
     events.find((event) => event.event === "inspection").error,
     /repeated its cursor/u
@@ -3099,11 +3596,14 @@ test("wildcard monitor stops a repeated cursor while retaining discovered thread
   assert.deepEqual(await exited, [0, null]);
 });
 
-test("wildcard monitor cancellation closes a pending later page without inspecting or reconnecting", async (t) => {
+await test("wildcard monitor cancellation closes a pending later page without inspecting or reconnecting", async (t) => {
   const { connections, requests, socket } = await fixture(
     t,
     ({ message, reply }) => {
-      if (message.method === "thread/loaded/list" && !message.params.cursor) {
+      if (
+        message.method === "thread/loaded/list" &&
+        (monitorParams.parse(message.params).cursor ?? "") === ""
+      ) {
         reply({ data: ["watched"], nextCursor: "pending" });
       }
     }
@@ -3115,28 +3615,36 @@ test("wildcard monitor cancellation closes a pending later page without inspecti
     "*"
   ]);
   await t.waitFor(
-    () =>
+    () => {
       assert.ok(
         requests.some((request) => request.params?.cursor === "pending")
-      ),
+      );
+    },
     { timeout: 2000 }
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  assert.deepEqual(events, []);
+  assert.equal(events.length, 0);
   assert.ok(
     requests.every((request) =>
       ["initialize", "thread/loaded/list"].includes(request.method)
     )
   );
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
 for (const phase of ["initialize", "thread/resume", "thread/read"]) {
   for (const name of ["codex_send", "codex_steer"]) {
-    test(`queued ${name} cancellation during ${phase} prevents late delivery and releases its writer`, async (t) => {
+    void test(`queued ${name} cancellation during ${phase} prevents late delivery and releases its writer`, async (t) => {
+      /** @type {WebSocket | undefined} */
       let original;
       let queued;
+      /** @type {(() => void) | undefined} */
       let lateReply;
       let paused = true;
       const turns = [{ id: "active", status: "inProgress" }];
@@ -3154,7 +3662,7 @@ for (const phase of ["initialize", "thread/resume", "thread/read"]) {
             if (message.method === "thread/read") {
               reply({ thread: { turns } });
             } else if (message.method === "turn/start") {
-              delivered.push(message.params.input[0].text);
+              delivered.push(turnInput.parse(message.params).input[0].text);
               const turn = {
                 id: `fresh-${delivered.length}`,
                 status: "completed"
@@ -3193,19 +3701,34 @@ for (const phase of ["initialize", "thread/resume", "thread/read"]) {
         { signal: controller.signal }
       );
       const rejected = assert.rejects(pending, /Fixture cancellation/u);
-      await t.waitFor(() => assert.ok(lateReply), { timeout: 2000 });
+      await t.waitFor(
+        () => {
+          assert.ok(lateReply !== undefined);
+        },
+        { timeout: 2000 }
+      );
       controller.abort(new Error("Fixture cancellation"));
       await rejected;
       await call(client, "codex_queue", { thread_id: "watched" });
-      await t.waitFor(() => assert.ok(!connections.has(original)), {
-        timeout: 2000
-      });
+      await t.waitFor(
+        () => {
+          assert.ok(original === undefined || !connections.has(original));
+        },
+        {
+          timeout: 2000
+        }
+      );
       turns[0].status = "completed";
       paused = false;
-      lateReply();
-      await t.waitFor(() => assert.equal(connections.size, 0), {
-        timeout: 2000
-      });
+      lateReply?.();
+      await t.waitFor(
+        () => {
+          assert.equal(connections.size, 0);
+        },
+        {
+          timeout: 2000
+        }
+      );
       assert.deepEqual(delivered, []);
       assert.equal(
         requests.filter((request) => request.method === "turn/start").length,
@@ -3215,29 +3738,37 @@ for (const phase of ["initialize", "thread/resume", "thread/read"]) {
         thread_id: "watched"
       });
       assert.ok(
-        receipt.value.messages.every(
-          (record) => record.status === "refused" && !("text" in record)
-        )
+        queueResult
+          .parse(receipt.value)
+          .messages.every(
+            (record) => record.status === "refused" && !("text" in record)
+          )
       );
       const fresh = await call(client, "codex_send", {
         text: "fresh accepted input",
         thread_id: "watched"
       });
       assert.equal(fresh.error, false);
-      assert.equal(fresh.value.status, "started");
+      assert.equal(statusResult.parse(fresh.value).status, "started");
       assert.deepEqual(delivered, ["fresh accepted input"]);
-      await t.waitFor(() => assert.equal(connections.size, 0), {
-        timeout: 2000
-      });
+      await t.waitFor(
+        () => {
+          assert.equal(connections.size, 0);
+        },
+        {
+          timeout: 2000
+        }
+      );
     });
   }
 }
 
 for (const name of ["codex_send", "codex_steer"]) {
-  test(`queued ${name} cancellation preserves acknowledged messages and accepts ordered fresh work`, async (t) => {
+  void test(`queued ${name} cancellation preserves acknowledged messages and accepts ordered fresh work`, async (t) => {
     let queueSocket;
     let initializes = 0;
     let paused = false;
+    /** @type {(() => void) | undefined} */
     let lateReply;
     const turns = [{ id: "active", status: "inProgress" }];
     const delivered = [];
@@ -3252,12 +3783,14 @@ for (const name of ["codex_send", "codex_steer"]) {
           reply({});
         } else if (message.method === "thread/read") {
           if (paused && ws === queueSocket) {
-            lateReply = () => reply({ thread: { turns } });
+            lateReply = () => {
+              reply({ thread: { turns } });
+            };
           } else {
             reply({ thread: { turns } });
           }
         } else if (message.method === "turn/start") {
-          delivered.push(message.params.input[0].text);
+          delivered.push(turnInput.parse(message.params).input[0].text);
           const turn = {
             id: `fresh-${delivered.length}`,
             status: "completed"
@@ -3280,7 +3813,7 @@ for (const name of ["codex_send", "codex_steer"]) {
       text: "acknowledged first",
       thread_id: "watched"
     });
-    assert.equal(first.value.status, "queued");
+    assert.equal(queueReceipt.parse(first.value).status, "queued");
     paused = true;
     const controller = new AbortController();
     const pending = client.callTool(
@@ -3296,7 +3829,12 @@ for (const name of ["codex_send", "codex_steer"]) {
       { signal: controller.signal }
     );
     const rejected = assert.rejects(pending, /Fixture cancellation/u);
-    await t.waitFor(() => assert.ok(lateReply), { timeout: 2000 });
+    await t.waitFor(
+      () => {
+        assert.ok(lateReply !== undefined);
+      },
+      { timeout: 2000 }
+    );
     controller.abort(new Error("Fixture cancellation"));
     await rejected;
     const cancelled = await call(client, "codex_queue", {
@@ -3306,17 +3844,29 @@ for (const name of ["codex_send", "codex_steer"]) {
       thread_id: "watched"
     });
     assert.equal(interrupted.error, false);
-    assert.equal(interrupted.value.status, "interrupted");
+    assert.equal(statusResult.parse(interrupted.value).status, "interrupted");
     paused = false;
-    lateReply();
-    await t.waitFor(() => assert.equal(connections.size, 1), {
-      timeout: 2000
-    });
-    assert.equal(cancelled.value.messages[0].id, first.value.id);
-    assert.equal(cancelled.value.messages[0].status, "queued");
+    lateReply?.();
+    await t.waitFor(
+      () => {
+        assert.equal(connections.size, 1);
+      },
+      {
+        timeout: 2000
+      }
+    );
+    assert.equal(
+      queueResult.parse(cancelled.value).messages[0].id,
+      queueReceipt.parse(first.value).id
+    );
+    assert.equal(
+      queueResult.parse(cancelled.value).messages[0].status,
+      "queued"
+    );
     assert.ok(
-      cancelled.value.messages
-        .slice(1)
+      queueResult
+        .parse(cancelled.value)
+        .messages.slice(1)
         .every((record) => record.status === "refused" && !("text" in record))
     );
     const fresh = await call(client, "codex_send", {
@@ -3324,18 +3874,25 @@ for (const name of ["codex_send", "codex_steer"]) {
       thread_id: "watched"
     });
     assert.equal(fresh.error, false);
-    assert.equal(fresh.value.status, "queued");
+    assert.equal(queueReceipt.parse(fresh.value).status, "queued");
     assert.deepEqual(delivered, []);
     turns[0].status = "completed";
-    queueSocket.send(
-      JSON.stringify({
-        method: "turn/completed",
-        params: { threadId: "watched", turn: turns[0] }
-      })
+    z.instanceof(WebSocket)
+      .parse(queueSocket)
+      .send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: { threadId: "watched", turn: turns[0] }
+        })
+      );
+    await t.waitFor(
+      () => {
+        assert.equal(connections.size, 0);
+      },
+      {
+        timeout: 2000
+      }
     );
-    await t.waitFor(() => assert.equal(connections.size, 0), {
-      timeout: 2000
-    });
     assert.deepEqual(delivered, ["acknowledged first", "fresh accepted input"]);
     assert.equal(
       requests.filter((request) => request.method === "turn/start").length,
@@ -3345,21 +3902,23 @@ for (const name of ["codex_send", "codex_steer"]) {
       thread_id: "watched"
     });
     assert.deepEqual(
-      receipt.value.messages
-        .filter((record) => record.status !== "refused")
+      queueResult
+        .parse(receipt.value)
+        .messages.filter((record) => record.status !== "refused")
         .map((record) => ({ id: record.id, status: record.status })),
       [
-        { id: first.value.id, status: "completed" },
-        { id: fresh.value.id, status: "completed" }
+        { id: queueReceipt.parse(first.value).id, status: "completed" },
+        { id: queueReceipt.parse(fresh.value).id, status: "completed" }
       ]
     );
   });
 }
 
-test("enqueue cancellation preserves a completion wake for acknowledged messages", async (t) => {
+await test("enqueue cancellation preserves a completion wake for acknowledged messages", async (t) => {
   let queueSocket;
   let initializes = 0;
   let paused = false;
+  /** @type {(() => void) | undefined} */
   let lateReply;
   const turns = [{ id: "active", status: "inProgress" }];
   const delivered = [];
@@ -3374,12 +3933,14 @@ test("enqueue cancellation preserves a completion wake for acknowledged messages
         reply({});
       } else if (message.method === "thread/read") {
         if (paused && ws === queueSocket) {
-          lateReply = () => reply({ thread: { turns } });
+          lateReply = () => {
+            reply({ thread: { turns } });
+          };
         } else {
           reply({ thread: { turns } });
         }
       } else if (message.method === "turn/start") {
-        delivered.push(message.params.input[0].text);
+        delivered.push(turnInput.parse(message.params).input[0].text);
         const turn = { id: "fresh", status: "completed" };
         turns.push(turn);
         ws.send(
@@ -3399,7 +3960,7 @@ test("enqueue cancellation preserves a completion wake for acknowledged messages
     text: "acknowledged first",
     thread_id: "watched"
   });
-  assert.equal(first.value.status, "queued");
+  assert.equal(queueReceipt.parse(first.value).status, "queued");
   paused = true;
   const controller = new AbortController();
   const pending = client.callTool(
@@ -3411,35 +3972,50 @@ test("enqueue cancellation preserves a completion wake for acknowledged messages
     { signal: controller.signal }
   );
   const rejected = assert.rejects(pending, /Fixture cancellation/u);
-  await t.waitFor(() => assert.ok(lateReply), { timeout: 2000 });
-  turns[0].status = "completed";
-  queueSocket.send(
-    JSON.stringify({
-      method: "turn/completed",
-      params: { threadId: "watched", turn: turns[0] }
-    })
+  await t.waitFor(
+    () => {
+      assert.ok(lateReply !== undefined);
+    },
+    { timeout: 2000 }
   );
-  const pong = once(queueSocket, "pong");
-  queueSocket.ping();
+  turns[0].status = "completed";
+  z.instanceof(WebSocket)
+    .parse(queueSocket)
+    .send(
+      JSON.stringify({
+        method: "turn/completed",
+        params: { threadId: "watched", turn: turns[0] }
+      })
+    );
+  const pong = once(z.instanceof(WebSocket).parse(queueSocket), "pong");
+  z.instanceof(WebSocket).parse(queueSocket).ping();
   await pong;
   paused = false;
   controller.abort(new Error("Fixture cancellation"));
   await rejected;
   await call(client, "codex_queue", { thread_id: "watched" });
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(delivered, ["acknowledged first"]);
-  lateReply();
+  lateReply?.();
   const receipt = await call(client, "codex_queue", { thread_id: "watched" });
   assert.deepEqual(
-    receipt.value.messages.map(({ id, status }) => ({ id, status })),
-    [{ id: first.value.id, status: "completed" }]
+    queueResult
+      .parse(receipt.value)
+      .messages.map(({ id, status }) => ({ id, status })),
+    [{ id: queueReceipt.parse(first.value).id, status: "completed" }]
   );
 });
 
 for (const name of ["codex_send", "codex_steer"]) {
-  test(`queued ${name} cancellation preserves an already-started turn without interruption or retry`, async (t) => {
+  void test(`queued ${name} cancellation preserves an already-started turn without interruption or retry`, async (t) => {
     let queueSocket;
     let initializes = 0;
+    /** @type {(() => void) | undefined} */
     let lateReply;
     const turns = [{ id: "original", status: "inProgress" }];
     const delivered = [];
@@ -3458,10 +4034,12 @@ for (const name of ["codex_send", "codex_steer"]) {
           turns[0].status = "completed";
           reply({});
         } else if (message.method === "turn/start") {
-          delivered.push(message.params.input[0].text);
+          delivered.push(turnInput.parse(message.params).input[0].text);
           const turn = { id: "started", status: "inProgress" };
           turns.push(turn);
-          lateReply = () => reply({ turn });
+          lateReply = () => {
+            reply({ turn });
+          };
         } else {
           reply({});
         }
@@ -3482,19 +4060,30 @@ for (const name of ["codex_send", "codex_steer"]) {
       { signal: controller.signal }
     );
     const rejected = assert.rejects(pending, /Fixture cancellation/u);
-    await t.waitFor(() => assert.ok(lateReply), { timeout: 2000 });
+    await t.waitFor(
+      () => {
+        assert.ok(lateReply !== undefined);
+      },
+      { timeout: 2000 }
+    );
     controller.abort(new Error("Fixture cancellation"));
     await rejected;
     await call(client, "codex_queue", { thread_id: "watched" });
-    lateReply();
+    lateReply?.();
     await t.waitFor(
       async () => {
         const receipt = await call(client, "codex_queue", {
           thread_id: "watched"
         });
-        assert.equal(receipt.value.messages.length, 1);
-        assert.equal(receipt.value.messages[0].status, "started");
-        assert.equal(receipt.value.messages[0].turnId, "started");
+        assert.equal(queueResult.parse(receipt.value).messages.length, 1);
+        assert.equal(
+          queueResult.parse(receipt.value).messages[0].status,
+          "started"
+        );
+        assert.equal(
+          queueResult.parse(receipt.value).messages[0].turnId,
+          "started"
+        );
       },
       { timeout: 2000 }
     );
@@ -3502,19 +4091,29 @@ for (const name of ["codex_send", "codex_steer"]) {
     assert.deepEqual(delivered, ["already started input"]);
     assert.ok(!requests.some((request) => request.method === "turn/interrupt"));
     turns[1].status = "completed";
-    queueSocket.send(
-      JSON.stringify({
-        method: "turn/completed",
-        params: { threadId: "watched", turn: turns[1] }
-      })
+    z.instanceof(WebSocket)
+      .parse(queueSocket)
+      .send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: { threadId: "watched", turn: turns[1] }
+        })
+      );
+    await t.waitFor(
+      () => {
+        assert.equal(connections.size, 0);
+      },
+      {
+        timeout: 2000
+      }
     );
-    await t.waitFor(() => assert.equal(connections.size, 0), {
-      timeout: 2000
-    });
     const receipt = await call(client, "codex_queue", {
       thread_id: "watched"
     });
-    assert.equal(receipt.value.messages[0].status, "completed");
+    assert.equal(
+      queueResult.parse(receipt.value).messages[0].status,
+      "completed"
+    );
     assert.deepEqual(delivered, ["already started input"]);
     assert.equal(
       requests.filter((request) => request.method === "turn/start").length,
@@ -3526,8 +4125,9 @@ for (const name of ["codex_send", "codex_steer"]) {
 
 for (const phase of ["initialize", "thread/read"]) {
   for (const name of ["codex_send", "codex_steer", "codex_interrupt"]) {
-    test(`curated ${name} cancellation during ${phase} prevents writes and releases its writer`, async (t) => {
+    void test(`curated ${name} cancellation during ${phase} prevents writes and releases its writer`, async (t) => {
       let paused = true;
+      /** @type {(() => void) | undefined} */
       let lateReply;
       const { client, connections, requests } = await fixture(
         t,
@@ -3542,7 +4142,9 @@ for (const phase of ["initialize", "thread/read"]) {
                 }
               : {};
           if (paused && message.method === phase) {
-            lateReply = () => reply(result);
+            lateReply = () => {
+              reply(result);
+            };
           } else {
             reply(result);
           }
@@ -3563,13 +4165,23 @@ for (const phase of ["initialize", "thread/read"]) {
         { signal: controller.signal }
       );
       const rejected = assert.rejects(pending, /Fixture cancellation/u);
-      await t.waitFor(() => assert.ok(lateReply), { timeout: 2000 });
+      await t.waitFor(
+        () => {
+          assert.ok(lateReply !== undefined);
+        },
+        { timeout: 2000 }
+      );
       controller.abort(new Error("Fixture cancellation"));
       await rejected;
-      await t.waitFor(() => assert.equal(connections.size, 0), {
-        timeout: 2000
-      });
-      lateReply();
+      await t.waitFor(
+        () => {
+          assert.equal(connections.size, 0);
+        },
+        {
+          timeout: 2000
+        }
+      );
+      lateReply?.();
       assert.ok(
         requests.every((request) =>
           ["initialize", "thread/read"].includes(request.method)
@@ -3578,18 +4190,18 @@ for (const phase of ["initialize", "thread/read"]) {
       const receipt = await call(client, "codex_queue", {
         thread_id: "watched"
       });
-      assert.deepEqual(receipt.value.messages, []);
+      assert.deepEqual(queueResult.parse(receipt.value).messages, []);
       paused = false;
       const fresh = await call(client, "codex_interrupt", {
         thread_id: "watched"
       });
       assert.equal(fresh.error, false);
-      assert.equal(fresh.value.status, "interrupted");
+      assert.equal(statusResult.parse(fresh.value).status, "interrupted");
     });
   }
 }
 
-test("monitor deduplicates newer idle inspection failures against buffered older completions", async (t) => {
+await test("monitor deduplicates newer idle inspection failures against buffered older completions", async (t) => {
   const error = { code: "model_not_found", message: "Fixture model is absent" };
   let inspections = 0;
   const { connections, socket } = await fixture(
@@ -3633,7 +4245,9 @@ test("monitor deduplicates newer idle inspection failures against buffered older
     "--thread",
     "*"
   ]);
-  await t.waitFor(() => assert.equal(events[0]?.status, "active"));
+  await t.waitFor(() => {
+    assert.equal(events[0]?.status, "active");
+  });
   const [owner] = connections;
   owner.send(
     JSON.stringify({
@@ -3644,19 +4258,21 @@ test("monitor deduplicates newer idle inspection failures against buffered older
       }
     })
   );
-  await t.waitFor(() =>
+  await t.waitFor(() => {
     assert.equal(
       events.filter((event) => event.event === "turnError").length,
       1
-    )
-  );
+    );
+  });
   owner.send(
     JSON.stringify({
       method: "thread/status/changed",
       params: { status: { type: "idle" }, threadId: "watched" }
     })
   );
-  await t.waitFor(() => assert.equal(events.at(-1)?.threadId, "sentinel"));
+  await t.waitFor(() => {
+    assert.equal(events.at(-1)?.threadId, "sentinel");
+  });
   assert.deepEqual(
     events
       .filter((event) => event.event === "turnError")
@@ -3665,10 +4281,12 @@ test("monitor deduplicates newer idle inspection failures against buffered older
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0));
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
 });
 
-test("monitor falls back to thread/read turns when paginated turns are unsupported", async (t) => {
+await test("monitor falls back to thread/read turns when paginated turns are unsupported", async (t) => {
   let status = "active";
   let turn = { id: "initial", status: "inProgress" };
   const { connections, requests, socket } = await fixture(
@@ -3688,7 +4306,9 @@ test("monitor falls back to thread/read turns when paginated turns are unsupport
         reply({
           thread: {
             status: { type: status },
-            ...(message.params.includeTurns ? { turns: [turn] } : {})
+            ...(monitorParams.parse(message.params).includeTurns === true
+              ? { turns: [turn] }
+              : {})
           }
         });
       }
@@ -3700,9 +4320,14 @@ test("monitor falls back to thread/read turns when paginated turns are unsupport
     "--thread",
     "watched"
   ]);
-  await t.waitFor(() => assert.equal(events[0]?.status, "active"), {
-    timeout: 2000
-  });
+  await t.waitFor(
+    () => {
+      assert.equal(events[0]?.status, "active");
+    },
+    {
+      timeout: 2000
+    }
+  );
   assert.ok(
     requests.some(
       (request) =>
@@ -3714,6 +4339,7 @@ test("monitor falls back to thread/read turns when paginated turns are unsupport
     1
   );
   assert.ok(events.every((event) => event.event === "threadStatus"));
+  /** @param {string} type - Status type. */
   const notify = (type) => {
     for (const ws of connections) {
       ws.send(
@@ -3731,7 +4357,12 @@ test("monitor falls back to thread/read turns when paginated turns are unsupport
     status: "failed"
   };
   notify("idle");
-  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 3);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(
     events.map((event) => [event.event, event.status]),
     [
@@ -3751,10 +4382,15 @@ test("monitor falls back to thread/read turns when paginated turns are unsupport
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor emits one capability notice when no supported turn read exists", async (t) => {
+await test("monitor emits one capability notice when no supported turn read exists", async (t) => {
   const { connections, socket } = await fixture(t, ({ message, reply, ws }) => {
     const turnRead =
       message.method === "thread/turns/list" ||
@@ -3782,11 +4418,12 @@ test("monitor emits one capability notice when no supported turn read exists", a
     "failed"
   ]);
   await t.waitFor(
-    () =>
+    () => {
       assert.equal(
         events.filter((event) => event.event === "capability").length,
         1
-      ),
+      );
+    },
     { timeout: 2000 }
   );
   for (const ws of connections) {
@@ -3797,7 +4434,12 @@ test("monitor emits one capability notice when no supported turn read exists", a
       })
     );
   }
-  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.equal(events[0].event, "threadStatus");
   assert.equal(events[0].status, "idle");
   assert.equal(events[0].previous, null);
@@ -3828,16 +4470,26 @@ test("monitor emits one capability notice when no supported turn read exists", a
       }
     })
   );
-  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
-  assert.equal(events.at(-1).event, "turnError");
-  assert.equal(events.at(-1).turnId, "later");
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 3);
+    },
+    { timeout: 2000 }
+  );
+  assert.equal(events.at(-1)?.event, "turnError");
+  assert.equal(events.at(-1)?.turnId, "later");
   assert.ok(events.every((event) => event.event !== "inspection"));
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor reports a status-read failure refused after unsupported turn reads", async (t) => {
+await test("monitor reports a status-read failure refused after unsupported turn reads", async (t) => {
   const { connections, socket } = await fixture(t, ({ message, ws }) => {
     if (message.method === "thread/turns/list") {
       ws.send(
@@ -3874,7 +4526,12 @@ test("monitor reports a status-read failure refused after unsupported turn reads
     "--thread",
     "watched"
   ]);
-  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.equal(events[0].event, "inspection");
   assert.equal(events[0].status, "systemError");
   assert.equal(events[0].threadId, "watched");
@@ -3884,10 +4541,15 @@ test("monitor reports a status-read failure refused after unsupported turn reads
   assert.equal(events[1].threadId, null);
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor retries an empty-rollout thread on its next status change", async (t) => {
+await test("monitor retries an empty-rollout thread on its next status change", async (t) => {
   let empty = true;
   let turn = { id: "initial", status: "inProgress" };
   const { connections, requests, socket } = await fixture(
@@ -3919,13 +4581,19 @@ test("monitor retries an empty-rollout thread on its next status change", async 
     "watched"
   ]);
   await t.waitFor(
-    () =>
+    () => {
       assert.ok(
         requests.some((request) => request.method === "thread/turns/list")
-      ),
+      );
+    },
     { timeout: 2000 }
   );
-  await t.waitFor(() => assert.equal(events.length, 1), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 1);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(events[0], {
     event: "threadStatus",
     previous: null,
@@ -3953,7 +4621,12 @@ test("monitor retries an empty-rollout thread on its next status change", async 
     status: "failed"
   };
   notify();
-  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.equal(events[1].event, "turnError");
   assert.equal(events[1].turnId, "initial");
   assert.ok(events.every((event) => event.event !== "inspection"));
@@ -3968,10 +4641,15 @@ test("monitor retries an empty-rollout thread on its next status change", async 
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor falls back per thread while other threads keep paginated turns", async (t) => {
+await test("monitor falls back per thread while other threads keep paginated turns", async (t) => {
   const error = { message: "fixture failure" };
   const turns = new Map([
     ["legacy", [{ error, id: "legacy-failure", status: "failed" }]],
@@ -3981,7 +4659,7 @@ test("monitor falls back per thread while other threads keep paginated turns", a
     t,
     ({ message, reply, ws }) => {
       if (message.method === "thread/turns/list") {
-        if (message.params.threadId === "legacy") {
+        if (monitorParams.parse(message.params).threadId === "legacy") {
           ws.send(
             JSON.stringify({
               error: {
@@ -3998,7 +4676,7 @@ test("monitor falls back per thread while other threads keep paginated turns", a
         reply({
           thread: {
             status: { type: "idle" },
-            ...(message.params.includeTurns
+            ...(monitorParams.parse(message.params).includeTurns === true
               ? { turns: turns.get("legacy") }
               : {})
           }
@@ -4014,7 +4692,12 @@ test("monitor falls back per thread while other threads keep paginated turns", a
     "--thread",
     "paginated"
   ]);
-  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(
     events
       .filter((event) => event.event === "threadStatus")
@@ -4039,13 +4722,15 @@ test("monitor falls back per thread while other threads keep paginated turns", a
           request.method === "thread/read" &&
           request.params.includeTurns === true
       )
-      .every((request) => request.params.threadId === "legacy")
+      .every(
+        (request) => monitorParams.parse(request.params).threadId === "legacy"
+      )
   );
   assert.equal(
     requests.filter(
       (request) =>
         request.method === "thread/turns/list" &&
-        request.params.threadId === "paginated"
+        monitorParams.parse(request.params).threadId === "paginated"
     ).length,
     1
   );
@@ -4068,7 +4753,7 @@ test("monitor falls back per thread while other threads keep paginated turns", a
     requests.filter(
       (request) =>
         request.method === "thread/turns/list" &&
-        request.params.threadId === "paginated"
+        monitorParams.parse(request.params).threadId === "paginated"
     ).length,
     2
   );
@@ -4076,7 +4761,7 @@ test("monitor falls back per thread while other threads keep paginated turns", a
     requests.filter(
       (request) =>
         request.method === "thread/turns/list" &&
-        request.params.threadId === "legacy"
+        monitorParams.parse(request.params).threadId === "legacy"
     ).length,
     1
   );
@@ -4087,14 +4772,21 @@ test("monitor falls back per thread while other threads keep paginated turns", a
           request.method === "thread/read" &&
           request.params.includeTurns === true
       )
-      .every((request) => request.params.threadId === "legacy")
+      .every(
+        (request) => monitorParams.parse(request.params).threadId === "legacy"
+      )
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor retries a not-materialized thread on its next status change", async (t) => {
+await test("monitor retries a not-materialized thread on its next status change", async (t) => {
   let materialized = false;
   const turn = {
     error: { message: "fixture failure" },
@@ -4130,7 +4822,12 @@ test("monitor retries a not-materialized thread on its next status change", asyn
     "--thread",
     "watched"
   ]);
-  await t.waitFor(() => assert.equal(events.length, 1), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 1);
+    },
+    { timeout: 2000 }
+  );
   assert.deepEqual(events[0], {
     event: "threadStatus",
     previous: null,
@@ -4155,7 +4852,12 @@ test("monitor retries a not-materialized thread on its next status change", asyn
       })
     );
   }
-  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 3);
+    },
+    { timeout: 2000 }
+  );
   assert.equal(events[1].event, "turnError");
   assert.equal(events[1].turnId, "first");
   assert.equal(events[2].status, "idle");
@@ -4170,10 +4872,15 @@ test("monitor retries a not-materialized thread on its next status change", asyn
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor keeps startup snapshots after a refused turn read and no redundant retry reads", async (t) => {
+await test("monitor keeps startup snapshots after a refused turn read and no redundant retry reads", async (t) => {
   let empty = true;
   const { connections, requests, socket } = await fixture(
     t,
@@ -4212,7 +4919,7 @@ test("monitor keeps startup snapshots after a refused turn read and no redundant
     "watched"
   ]);
   await t.waitFor(
-    () =>
+    () => {
       assert.ok(
         events.some(
           (event) =>
@@ -4220,7 +4927,8 @@ test("monitor keeps startup snapshots after a refused turn read and no redundant
             event.previous === null &&
             event.status === "idle"
         )
-      ),
+      );
+    },
     { timeout: 2000 }
   );
   const statusReads = () =>
@@ -4230,6 +4938,7 @@ test("monitor keeps startup snapshots after a refused turn read and no redundant
         request.params.includeTurns === false
     ).length;
   assert.equal(statusReads(), 1);
+  /** @param {string} type - Status type. */
   const notify = (type) => {
     for (const ws of connections) {
       ws.send(
@@ -4275,29 +4984,35 @@ test("monitor keeps startup snapshots after a refused turn read and no redundant
   );
   notify("idle");
   await t.waitFor(
-    () =>
+    () => {
       assert.ok(
         events.some(
           (event) => event.event === "turnError" && event.turnId === "initial"
         )
-      ),
+      );
+    },
     { timeout: 2000 }
   );
   assert.equal(statusReads(), 3);
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor bounds deferred threads and drops the oldest entry past the cap", async (t) => {
+await test("monitor bounds deferred threads and drops the oldest entry past the cap", async (t) => {
   const refusing = new Set(["oldest"]);
   const turnRequests = [];
   const { connections, socket } = await fixture(t, ({ message, reply, ws }) => {
     if (message.method === "thread/loaded/list") {
       reply({ data: ["oldest"] });
     } else if (message.method === "thread/turns/list") {
-      turnRequests.push(message.params.threadId);
-      if (refusing.has(message.params.threadId)) {
+      turnRequests.push(monitorParams.parse(message.params).threadId);
+      if (refusing.has(monitorParams.parse(message.params).threadId)) {
         ws.send(
           JSON.stringify({
             error: {
@@ -4320,9 +5035,17 @@ test("monitor bounds deferred threads and drops the oldest entry past the cap", 
     "--thread",
     "*"
   ]);
-  await t.waitFor(() => assert.ok(turnRequests.includes("oldest")), {
-    timeout: 2000
-  });
+  await t.waitFor(
+    () => {
+      assert.ok(turnRequests.includes("oldest"));
+    },
+    {
+      timeout: 2000
+    }
+  );
+  /** @param {string} threadId - Thread ID.
+   * @param {string} type - Status type.
+   */
   const notify = (threadId, type) => {
     for (const ws of connections) {
       ws.send(
@@ -4337,35 +5060,49 @@ test("monitor bounds deferred threads and drops the oldest entry past the cap", 
     refusing.add(`bulk-${count}`);
     notify(`bulk-${count}`, "idle");
   }
-  await t.waitFor(() => assert.ok(turnRequests.includes("bulk-127")), {
-    timeout: 2000
-  });
+  await t.waitFor(
+    () => {
+      assert.ok(turnRequests.includes("bulk-127"));
+    },
+    {
+      timeout: 2000
+    }
+  );
   notify("oldest", "active");
   await delay(100);
   assert.equal(turnRequests.filter((id) => id === "oldest").length, 1);
   notify("bulk-0", "active");
   await t.waitFor(
-    () => assert.equal(turnRequests.filter((id) => id === "bulk-0").length, 2),
+    () => {
+      assert.equal(turnRequests.filter((id) => id === "bulk-0").length, 2);
+    },
     { timeout: 2000 }
   );
   notify("oldest", "idle");
   await t.waitFor(
-    () => assert.equal(turnRequests.filter((id) => id === "oldest").length, 2),
+    () => {
+      assert.equal(turnRequests.filter((id) => id === "oldest").length, 2);
+    },
     { timeout: 2000 }
   );
   assert.ok(events.every((event) => event.event !== "inspection"));
   assert.ok(events.every((event) => event.event !== "capability"));
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("monitor drops a deferred thread when it leaves daemon memory", async (t) => {
+await test("monitor drops a deferred thread when it leaves daemon memory", async (t) => {
   let refused = true;
   const turnRequests = [];
   const { connections, socket } = await fixture(t, ({ message, reply, ws }) => {
     if (message.method === "thread/turns/list") {
-      turnRequests.push(message.params.threadId);
+      turnRequests.push(monitorParams.parse(message.params).threadId);
       if (refused) {
         ws.send(
           JSON.stringify({
@@ -4395,10 +5132,16 @@ test("monitor drops a deferred thread when it leaves daemon memory", async (t) =
     "--status",
     "notLoaded"
   ]);
-  await t.waitFor(() => assert.equal(events[0]?.status, "idle"), {
-    timeout: 2000
-  });
+  await t.waitFor(
+    () => {
+      assert.equal(events[0]?.status, "idle");
+    },
+    {
+      timeout: 2000
+    }
+  );
   assert.equal(turnRequests.length, 1);
+  /** @param {string} type - Status type. */
   const notify = (type) => {
     for (const ws of connections) {
       ws.send(
@@ -4410,7 +5153,12 @@ test("monitor drops a deferred thread when it leaves daemon memory", async (t) =
     }
   };
   notify("notLoaded");
-  await t.waitFor(() => assert.equal(events.length, 2), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 2);
+    },
+    { timeout: 2000 }
+  );
   assert.equal(events[1].status, "notLoaded");
   refused = false;
   notify("active");
@@ -4418,19 +5166,34 @@ test("monitor drops a deferred thread when it leaves daemon memory", async (t) =
   assert.equal(events.length, 2);
   assert.equal(turnRequests.length, 1);
   notify("idle");
-  await t.waitFor(() => assert.equal(turnRequests.length, 2), {
-    timeout: 2000
-  });
-  await t.waitFor(() => assert.equal(events.length, 3), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(turnRequests.length, 2);
+    },
+    {
+      timeout: 2000
+    }
+  );
+  await t.waitFor(
+    () => {
+      assert.equal(events.length, 3);
+    },
+    { timeout: 2000 }
+  );
   assert.equal(events[2].previous, "active");
   assert.equal(events[2].status, "idle");
   assert.ok(events.every((event) => event.event !== "inspection"));
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0), { timeout: 2000 });
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
-test("default wildcard monitor silently baselines history and emits named post-launch transitions and terminals", async (t) => {
+await test("default wildcard monitor silently baselines history and emits named post-launch transitions and terminals", async (t) => {
   let name = "Synthetic initial name";
   let turn = { id: "old-failure", itemsView: "notLoaded", status: "failed" };
   const final = "Synthetic final answer\n".repeat(10_000);
@@ -4439,16 +5202,29 @@ test("default wildcard monitor silently baselines history and emits named post-l
     ({ message, reply }) => {
       if (message.method === "thread/loaded/list") {
         reply(
-          message.params.cursor
-            ? { data: ["second"] }
-            : { data: ["watched"], nextCursor: "next" }
+          (monitorParams.parse(message.params).cursor ?? "") === ""
+            ? { data: ["watched"], nextCursor: "next" }
+            : { data: ["second"] }
         );
       } else if (message.method === "thread/read") {
         reply({ thread: { name, status: "idle" } });
       } else if (message.method === "thread/items/list") {
         reply(
-          message.params.cursor
+          (monitorParams.parse(message.params).cursor ?? "") === ""
             ? {
+                data: [
+                  {
+                    item: {
+                      phase: "commentary",
+                      text: "Synthetic progress",
+                      type: "agentMessage"
+                    },
+                    turnId: monitorParams.parse(message.params).turnId
+                  }
+                ],
+                nextCursor: "last"
+              }
+            : {
                 data: [
                   {
                     item: {
@@ -4456,7 +5232,7 @@ test("default wildcard monitor silently baselines history and emits named post-l
                       text: final,
                       type: "agentMessage"
                     },
-                    turnId: message.params.turnId
+                    turnId: monitorParams.parse(message.params).turnId
                   },
                   {
                     item: {
@@ -4468,19 +5244,6 @@ test("default wildcard monitor silently baselines history and emits named post-l
                   }
                 ]
               }
-            : {
-                data: [
-                  {
-                    item: {
-                      phase: "commentary",
-                      text: "Synthetic progress",
-                      type: "agentMessage"
-                    },
-                    turnId: message.params.turnId
-                  }
-                ],
-                nextCursor: "last"
-              }
         );
       } else {
         reply({ data: [turn] });
@@ -4488,25 +5251,31 @@ test("default wildcard monitor silently baselines history and emits named post-l
     }
   );
   const { child, events, exited } = monitor(t, socket, ["--thread", "*"]);
-  await t.waitFor(() =>
+  await t.waitFor(() => {
     assert.equal(
       requests.filter(({ method }) => method === "thread/read").length,
       2
-    )
-  );
+    );
+  });
   await delay(30);
-  assert.deepEqual(events, []);
+  assert.equal(events.length, 0);
   const [owner] = connections;
-  const status = (threadId, type) =>
+  /** @param {string} threadId - Thread ID.
+   * @param {string} type - Status type.
+   */
+  const status = (threadId, type) => {
     owner.send(
       JSON.stringify({
         method: "thread/status/changed",
         params: { status: { type }, threadId }
       })
     );
+  };
   status("watched", "idle");
   status("watched", "active");
-  await t.waitFor(() => assert.equal(events.length, 1));
+  await t.waitFor(() => {
+    assert.equal(events.length, 1);
+  });
   assert.equal(events[0].previous, "idle");
   assert.equal(events[0].threadName, name);
   name = "Synthetic renamed thread";
@@ -4516,7 +5285,9 @@ test("default wildcard monitor silently baselines history and emits named post-l
     status: "completed"
   };
   status("watched", "idle");
-  await t.waitFor(() => assert.equal(events.length, 3));
+  await t.waitFor(() => {
+    assert.equal(events.length, 3);
+  });
   assert.equal(events[1].event, "turnCompleted");
   assert.equal(events[1].turnId, "fresh-completion");
   assert.equal(events[1].turnStatus, "completed");
@@ -4530,7 +5301,9 @@ test("default wildcard monitor silently baselines history and emits named post-l
   assert.equal(events.length, 3);
   turn = { id: "fresh-failure", items: [], status: "failed" };
   status("new-thread", "idle");
-  await t.waitFor(() => assert.equal(events.length, 5));
+  await t.waitFor(() => {
+    assert.equal(events.length, 5);
+  });
   assert.equal(events[3].event, "turnError");
   assert.equal(events[3].previous, "active");
   assert.equal(events[3].finalMessage, null);
@@ -4543,29 +5316,33 @@ test("default wildcard monitor silently baselines history and emits named post-l
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0));
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
 });
 
 for (const includeUnnamed of [false, true]) {
   for (const includeInitial of [false, true]) {
     for (const includeNotLoaded of [false, true]) {
       for (const includePreviousNotLoaded of [false, true]) {
-        test(`wildcard monitor selects name, previous, and current categories independently: ${includeUnnamed}/${includeInitial}/${includeNotLoaded}/${includePreviousNotLoaded}`, async (t) => {
+        void test(`wildcard monitor selects name, previous, and current categories independently: ${includeUnnamed}/${includeInitial}/${includeNotLoaded}/${includePreviousNotLoaded}`, async (t) => {
           const { connections, requests, socket } = await fixture(
             t,
-            ({ message, reply }) =>
+            ({ message, reply }) => {
               reply(
                 message.method === "thread/read"
                   ? {
                       thread: {
                         name:
-                          message.params.threadId === "sentinel"
+                          monitorParams.parse(message.params).threadId ===
+                          "sentinel"
                             ? "Synthetic sentinel"
                             : null
                       }
                     }
                   : { data: [] }
-              )
+              );
+            }
           );
           const args = [
             ...(includeUnnamed ? ["--include-unnamed"] : []),
@@ -4589,11 +5366,11 @@ for (const includeUnnamed of [false, true]) {
             );
           }
           const { child, events, exited } = monitor(t, socket, args);
-          await t.waitFor(() =>
+          await t.waitFor(() => {
             assert.ok(
               requests.some(({ method }) => method === "thread/loaded/list")
-            )
-          );
+            );
+          });
           const [owner] = connections;
           for (const type of [
             "active",
@@ -4639,12 +5416,12 @@ for (const includeUnnamed of [false, true]) {
                 { previous: "active", status: "idle" }
               ]
             : [];
-          await t.waitFor(() =>
+          await t.waitFor(() => {
             assert.equal(
               events.filter(({ threadId }) => threadId === "sentinel").length,
               includeInitial ? 2 : 1
-            )
-          );
+            );
+          });
           child.kill("SIGTERM");
           assert.deepEqual(await exited, [0, null]);
           assert.deepEqual(
@@ -4658,7 +5435,9 @@ for (const includeUnnamed of [false, true]) {
               .filter(({ threadId }) => threadId !== "sentinel")
               .every(({ threadName }) => threadName === null)
           );
-          await t.waitFor(() => assert.equal(connections.size, 0));
+          await t.waitFor(() => {
+            assert.equal(connections.size, 0);
+          });
         });
       }
     }
@@ -4666,7 +5445,7 @@ for (const includeUnnamed of [false, true]) {
 }
 
 for (const includeInitial of [false, true]) {
-  test(`monitor preserves concurrent fresh failures through inspector initialization and later baselines: ${includeInitial}`, async (t) => {
+  void test(`monitor preserves concurrent fresh failures through inspector initialization and later baselines: ${includeInitial}`, async (t) => {
     let initializes = 0;
     const fresh = {
       id: "racing-failure",
@@ -4698,7 +5477,9 @@ for (const includeInitial of [false, true]) {
                 params: { threadId: "watched", turn: fresh }
               })
             );
-            setTimeout(() => reply({}), 30);
+            setTimeout(() => {
+              reply({});
+            }, 30);
           } else {
             reply({});
           }
@@ -4715,12 +5496,14 @@ for (const includeInitial of [false, true]) {
       "--thread",
       "watched"
     ]);
-    await t.waitFor(() => assert.equal(events.length, includeInitial ? 2 : 1));
-    assert.equal(events.at(-1).event, "turnError");
-    assert.equal(events.at(-1).turnId, fresh.id);
-    assert.equal(events.at(-1).previous, "active");
-    assert.equal(events.at(-1).threadName, "Synthetic race");
-    assert.equal(events.at(-1).finalMessage, null);
+    await t.waitFor(() => {
+      assert.equal(events.length, includeInitial ? 2 : 1);
+    });
+    assert.equal(events.at(-1)?.event, "turnError");
+    assert.equal(events.at(-1)?.turnId, fresh.id);
+    assert.equal(events.at(-1)?.previous, "active");
+    assert.equal(events.at(-1)?.threadName, "Synthetic race");
+    assert.equal(events.at(-1)?.finalMessage, null);
     const [owner] = connections;
     owner.send(
       JSON.stringify({
@@ -4734,15 +5517,19 @@ for (const includeInitial of [false, true]) {
         params: { status: "idle", threadId: "watched" }
       })
     );
-    await t.waitFor(() => assert.equal(events.at(-1).status, "idle"));
+    await t.waitFor(() => {
+      assert.equal(events.at(-1)?.status, "idle");
+    });
     assert.equal(events.filter(({ event }) => event === "turnError").length, 1);
     child.kill("SIGTERM");
     assert.deepEqual(await exited, [0, null]);
-    await t.waitFor(() => assert.equal(connections.size, 0));
+    await t.waitFor(() => {
+      assert.equal(connections.size, 0);
+    });
   });
 }
 
-test("monitor preserves a terminal notification received during its first initialization", async (t) => {
+await test("monitor preserves a terminal notification received during its first initialization", async (t) => {
   let initializes = 0;
   const historical = {
     completedAt: 0,
@@ -4801,8 +5588,9 @@ test("monitor preserves a terminal notification received during its first initia
     "watched"
   ]);
   await t.waitFor(
-    () =>
-      assert.equal(events.filter(({ turnId }) => turnId === turn.id).length, 1),
+    () => {
+      assert.equal(events.filter(({ turnId }) => turnId === turn.id).length, 1);
+    },
     { timeout: 2000 }
   );
   const terminal = events.find(({ turnId }) => turnId === turn.id);
@@ -4815,7 +5603,9 @@ test("monitor preserves a terminal notification received during its first initia
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0));
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
 });
 
 for (const includeInitial of [false, true]) {
@@ -4826,7 +5616,7 @@ for (const includeInitial of [false, true]) {
       "idle-read",
       "historical"
     ]) {
-      test(`monitor correlates status-only startup terminals with native baselines: ${includeInitial}/${outcome}/${race}`, async (t) => {
+      void test(`monitor correlates status-only startup terminals with native baselines: ${includeInitial}/${outcome}/${race}`, async (t) => {
         let initializes = 0;
         const fresh = {
           ...(race === "historical" ? { completedAt: 0 } : {}),
@@ -4860,7 +5650,9 @@ for (const includeInitial of [false, true]) {
                     })
                   );
                 }
-                setTimeout(() => reply({}), 30);
+                setTimeout(() => {
+                  reply({});
+                }, 30);
               } else {
                 reply({});
               }
@@ -4877,7 +5669,10 @@ for (const includeInitial of [false, true]) {
                     : "idle"
                 }
               };
-              if (race === "idle-read" && !message.params.includeTurns) {
+              if (
+                race === "idle-read" &&
+                monitorParams.parse(message.params).includeTurns !== true
+              ) {
                 const [owner] = targets;
                 owner.send(
                   JSON.stringify({
@@ -4885,7 +5680,9 @@ for (const includeInitial of [false, true]) {
                     params: { status: "idle", threadId: "watched" }
                   })
                 );
-                setTimeout(() => reply(result), 30);
+                setTimeout(() => {
+                  reply(result);
+                }, 30);
               } else {
                 reply(result);
               }
@@ -4898,7 +5695,7 @@ for (const includeInitial of [false, true]) {
           "--thread",
           "*"
         ]);
-        await t.waitFor(() =>
+        await t.waitFor(() => {
           assert.ok(
             events.some(
               ({ event, status, previous }) =>
@@ -4906,8 +5703,8 @@ for (const includeInitial of [false, true]) {
                 status === "idle" &&
                 previous === "active"
             )
-          )
-        );
+          );
+        });
         const terminals = events.filter(({ turnId }) => turnId === fresh.id);
         assert.equal(terminals.length, race === "historical" ? 0 : 1);
         if (race !== "historical") {
@@ -4950,20 +5747,24 @@ for (const includeInitial of [false, true]) {
             params: { threadId: "watched", turn: next }
           })
         );
-        await t.waitFor(() => assert.equal(events.at(-1).turnId, next.id));
+        await t.waitFor(() => {
+          assert.equal(events.at(-1)?.turnId, next.id);
+        });
         assert.equal(
           events.filter(({ turnId }) => turnId === fresh.id).length,
           race === "historical" ? 0 : 1
         );
         child.kill("SIGTERM");
         assert.deepEqual(await exited, [0, null]);
-        await t.waitFor(() => assert.equal(connections.size, 0));
+        await t.waitFor(() => {
+          assert.equal(connections.size, 0);
+        });
       });
     }
   }
 }
 
-test("terminal enrichment correlates exact turns and diagnoses missing history without substituting progress or stale finals", async (t) => {
+await test("terminal enrichment correlates exact turns and diagnoses missing history without substituting progress or stale finals", async (t) => {
   let missing = false;
   const { connections, requests, socket } = await fixture(
     t,
@@ -5030,19 +5831,23 @@ test("terminal enrichment correlates exact turns and diagnoses missing history w
     "--thread",
     "watched"
   ]);
-  await t.waitFor(() =>
-    assert.ok(requests.some(({ method }) => method === "thread/read"))
-  );
+  await t.waitFor(() => {
+    assert.ok(requests.some(({ method }) => method === "thread/read"));
+  });
   const [owner] = connections;
-  const terminal = (turn) =>
+  /** @param {unknown} turn - Completed turn. */
+  const terminal = (turn) => {
     owner.send(
       JSON.stringify({
         method: "turn/completed",
         params: { threadId: "watched", turn }
       })
     );
+  };
   terminal({ id: "correlated", itemsView: "notLoaded", status: "completed" });
-  await t.waitFor(() => assert.equal(events.length, 1));
+  await t.waitFor(() => {
+    assert.equal(events.length, 1);
+  });
   assert.equal(events[0].finalMessage, "Synthetic corresponding final");
   assert.equal(events[0].threadName, null);
   missing = true;
@@ -5052,7 +5857,9 @@ test("terminal enrichment correlates exact turns and diagnoses missing history w
     itemsView: "notLoaded",
     status: "failed"
   });
-  await t.waitFor(() => assert.equal(events.length, 2));
+  await t.waitFor(() => {
+    assert.equal(events.length, 2);
+  });
   assert.equal(events[1].event, "turnError");
   assert.equal(events[1].finalMessage, null);
   assert.match(events[1].enrichmentError, /unavailable/u);
@@ -5063,18 +5870,22 @@ test("terminal enrichment correlates exact turns and diagnoses missing history w
     ],
     status: "completed"
   });
-  await t.waitFor(() => assert.equal(events.length, 3));
+  await t.waitFor(() => {
+    assert.equal(events.length, 3);
+  });
   assert.equal(events[2].finalMessage, null);
   assert.ok(
     events.every(({ finalMessage }) => finalMessage !== "Synthetic stale final")
   );
   child.kill("SIGTERM");
   assert.deepEqual(await exited, [0, null]);
-  await t.waitFor(() => assert.equal(connections.size, 0));
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
 });
 
 for (const phase of ["thread/items/list", "thread/read"]) {
-  test(`monitor deadline cancels terminal enrichment during ${phase} and releases both sockets`, async (t) => {
+  void test(`monitor deadline cancels terminal enrichment during ${phase} and releases both sockets`, async (t) => {
     let metadataReads = 0;
     let stalled = false;
     const { connections, requests, socket } = await fixture(
@@ -5104,9 +5915,9 @@ for (const phase of ["thread/items/list", "thread/read"]) {
       "--timeout-seconds",
       "0.6"
     ]);
-    await t.waitFor(() =>
-      assert.ok(requests.some(({ method }) => method === "thread/read"))
-    );
+    await t.waitFor(() => {
+      assert.ok(requests.some(({ method }) => method === "thread/read"));
+    });
     const [owner] = connections;
     owner.send(
       JSON.stringify({
@@ -5131,16 +5942,20 @@ for (const phase of ["thread/items/list", "thread/read"]) {
         }
       })
     );
-    await t.waitFor(() => assert.equal(stalled, true));
+    await t.waitFor(() => {
+      assert.equal(stalled, true);
+    });
     assert.deepEqual(await exited, [0, null]);
-    assert.deepEqual(events, []);
-    await t.waitFor(() => assert.equal(connections.size, 0));
+    assert.equal(events.length, 0);
+    await t.waitFor(() => {
+      assert.equal(connections.size, 0);
+    });
   });
 }
 
 for (const includeInitial of [false, true]) {
   for (const turnStatus of ["failed", "completed"]) {
-    test(`monitor never replays historical ${turnStatus} notifications after an idle inspection: ${includeInitial}`, async (t) => {
+    void test(`monitor never replays historical ${turnStatus} notifications after an idle inspection: ${includeInitial}`, async (t) => {
       const historical = {
         id: "historical-terminal",
         items: [],
@@ -5148,21 +5963,22 @@ for (const includeInitial of [false, true]) {
       };
       const { connections, requests, socket } = await fixture(
         t,
-        ({ message, reply }) =>
+        ({ message, reply }) => {
           reply(
             message.method === "thread/read"
               ? { thread: { name: "Synthetic history", status: "idle" } }
               : { data: [historical] }
-          )
+          );
+        }
       );
       const { child, events, exited } = monitor(t, socket, [
         ...(includeInitial ? ["--include-initial"] : []),
         "--thread",
         "watched"
       ]);
-      await t.waitFor(() =>
-        assert.ok(requests.some(({ method }) => method === "thread/read"))
-      );
+      await t.waitFor(() => {
+        assert.ok(requests.some(({ method }) => method === "thread/read"));
+      });
       const [owner] = connections;
       owner.send(
         JSON.stringify({
@@ -5182,7 +5998,9 @@ for (const includeInitial of [false, true]) {
           params: { status: "systemError", threadId: "watched" }
         })
       );
-      await t.waitFor(() => assert.equal(events.at(-1)?.status, "systemError"));
+      await t.waitFor(() => {
+        assert.equal(events.at(-1)?.status, "systemError");
+      });
       assert.ok(events.every(({ turnId }) => turnId !== historical.id));
       owner.send(
         JSON.stringify({
@@ -5193,20 +6011,22 @@ for (const includeInitial of [false, true]) {
           }
         })
       );
-      await t.waitFor(() =>
-        assert.equal(events.at(-1)?.turnId, "genuinely-distinct-terminal")
-      );
-      assert.equal(events.at(-1).finalMessage, null);
+      await t.waitFor(() => {
+        assert.equal(events.at(-1)?.turnId, "genuinely-distinct-terminal");
+      });
+      assert.equal(events.at(-1)?.finalMessage, null);
       child.kill("SIGTERM");
       assert.deepEqual(await exited, [0, null]);
-      await t.waitFor(() => assert.equal(connections.size, 0));
+      await t.waitFor(() => {
+        assert.equal(connections.size, 0);
+      });
     });
   }
 }
 
 for (const includeInitial of [false, true]) {
   for (const secondRaces of [false, true]) {
-    test(`monitor keeps unaffected baselines and captures buffered cross-thread startup events: ${includeInitial}/${secondRaces}`, async (t) => {
+    void test(`monitor keeps unaffected baselines and captures buffered cross-thread startup events: ${includeInitial}/${secondRaces}`, async (t) => {
       let injected = false;
       const { connections, requests, socket } = await fixture(
         t,
@@ -5214,7 +6034,10 @@ for (const includeInitial of [false, true]) {
           if (message.method === "thread/loaded/list") {
             reply({ data: ["first", "second"] });
           } else if (message.method === "thread/read") {
-            if (!injected && message.params.threadId === "first") {
+            if (
+              !injected &&
+              monitorParams.parse(message.params).threadId === "first"
+            ) {
               injected = true;
               const [owner] = targets;
               owner.send(
@@ -5231,7 +6054,9 @@ for (const includeInitial of [false, true]) {
                   })
                 );
               }
-              setTimeout(() => reply({ thread: { status: "active" } }), 30);
+              setTimeout(() => {
+                reply({ thread: { status: "active" } });
+              }, 30);
             } else {
               reply({ thread: { status: "active" } });
             }
@@ -5246,14 +6071,14 @@ for (const includeInitial of [false, true]) {
         "--thread",
         "*"
       ]);
-      await t.waitFor(() =>
+      await t.waitFor(() => {
         assert.ok(
           requests.some(
             ({ method, params }) =>
               method === "thread/read" && params.threadId === "second"
           )
-        )
-      );
+        );
+      });
       await delay(30);
       const [owner] = connections;
       const fresh = { id: "second-fresh-failure", items: [], status: "failed" };
@@ -5269,7 +6094,9 @@ for (const includeInitial of [false, true]) {
           params: { status: "idle", threadId: "second" }
         })
       );
-      await t.waitFor(() => assert.equal(events.at(-1)?.status, "idle"));
+      await t.waitFor(() => {
+        assert.equal(events.at(-1)?.status, "idle");
+      });
       assert.ok(
         events.some(
           ({ turnId, previous }) => turnId === fresh.id && previous === "active"
@@ -5294,32 +6121,35 @@ for (const includeInitial of [false, true]) {
       } else {
         assert.ok(events.every(({ previous }) => previous !== null));
       }
-      assert.equal(events.at(-1).previous, "active");
+      assert.equal(events.at(-1)?.previous, "active");
       child.kill("SIGTERM");
       assert.deepEqual(await exited, [0, null]);
-      await t.waitFor(() => assert.equal(connections.size, 0));
+      await t.waitFor(() => {
+        assert.equal(connections.size, 0);
+      });
     });
   }
 }
 
 for (const selection of ["explicit", "wildcard"]) {
   for (const includeUnnamed of [false, true]) {
-    test(`monitor preserves named events and selects unnamed threads explicitly: ${selection}/${includeUnnamed}`, async (t) => {
+    void test(`monitor preserves named events and selects unnamed threads explicitly: ${selection}/${includeUnnamed}`, async (t) => {
+      /** @type {string | null} */
       let unnamedName = null;
       const { connections, requests, socket } = await fixture(
         t,
         ({ message, reply }) => {
           if (message.method === "thread/loaded/list") {
             reply(
-              message.params.cursor
-                ? { data: ["unnamed"], nextCursor: null }
-                : { data: ["named"], nextCursor: "synthetic-page" }
+              (monitorParams.parse(message.params).cursor ?? "") === ""
+                ? { data: ["named"], nextCursor: "synthetic-page" }
+                : { data: ["unnamed"], nextCursor: null }
             );
           } else if (message.method === "thread/read") {
             reply({
               thread: {
                 name:
-                  message.params.threadId === "named"
+                  monitorParams.parse(message.params).threadId === "named"
                     ? "Synthetic Main"
                     : unnamedName,
                 status: "active"
@@ -5338,18 +6168,27 @@ for (const selection of ["explicit", "wildcard"]) {
         selection === "wildcard" ? "*" : "named",
         ...(selection === "explicit" ? ["--thread", "unnamed"] : [])
       ]);
-      await t.waitFor(() =>
+      await t.waitFor(() => {
         assert.equal(
           requests.filter(({ method }) => method === "thread/read").length,
           2
-        )
-      );
+        );
+      });
       await delay(30);
-      assert.deepEqual(events, []);
+      assert.equal(events.length, 0);
       const [owner] = connections;
-      const notify = (threadId, method, params) =>
+      /** @param {string} threadId - Thread ID.
+       * @param {string} method - Notification method.
+       * @param {Record<string, unknown>} params - Notification parameters.
+       */
+      const notify = (threadId, method, params) => {
         owner.send(JSON.stringify({ method, params: { ...params, threadId } }));
-      const complete = (threadId, id, status) =>
+      };
+      /** @param {string} threadId - Thread ID.
+       * @param {string} id - Turn ID.
+       * @param {string} status - Turn status.
+       */
+      const complete = (threadId, id, status) => {
         notify(threadId, "turn/completed", {
           turn: {
             id,
@@ -5380,6 +6219,7 @@ for (const selection of ["explicit", "wildcard"]) {
             ]
           }
         });
+      };
       for (const threadId of ["named", "unnamed"]) {
         complete(threadId, "completed", "completed");
         notify(threadId, "thread/status/changed", { status: "idle" });
@@ -5387,9 +6227,9 @@ for (const selection of ["explicit", "wildcard"]) {
         complete(threadId, "failure", "failed");
         notify(threadId, "thread/status/changed", { status: "systemError" });
       }
-      await t.waitFor(() =>
-        assert.equal(events.length, includeUnnamed ? 8 : 4)
-      );
+      await t.waitFor(() => {
+        assert.equal(events.length, includeUnnamed ? 8 : 4);
+      });
       assert.equal(
         events.filter(({ threadId }) => threadId === "unnamed").length,
         includeUnnamed ? 4 : 0
@@ -5414,7 +6254,9 @@ for (const selection of ["explicit", "wildcard"]) {
       notify("unnamed", "thread/status/changed", { status: "active" });
       complete("unnamed", "after-rename", "completed");
       notify("unnamed", "thread/status/changed", { status: "idle" });
-      await t.waitFor(() => assert.equal(events.length, retained + 3));
+      await t.waitFor(() => {
+        assert.equal(events.length, retained + 3);
+      });
       assert.deepEqual(
         events.slice(retained).map(({ event }) => event),
         ["threadStatus", "turnCompleted", "threadStatus"]
@@ -5424,15 +6266,15 @@ for (const selection of ["explicit", "wildcard"]) {
           .slice(retained)
           .every(({ threadName }) => threadName === unnamedName)
       );
-      assert.equal(events.at(-2).finalMessage, "Synthetic final after-rename");
+      assert.equal(events.at(-2)?.finalMessage, "Synthetic final after-rename");
       unnamedName = null;
       notify("unnamed", "thread/status/changed", { status: "active" });
       complete("unnamed", "after-removal", "completed");
       notify("unnamed", "thread/status/changed", { status: "idle" });
       notify("named", "thread/status/changed", { status: "active" });
-      await t.waitFor(() =>
-        assert.equal(events.length, retained + 4 + (includeUnnamed ? 3 : 0))
-      );
+      await t.waitFor(() => {
+        assert.equal(events.length, retained + 4 + (includeUnnamed ? 3 : 0));
+      });
       child.kill("SIGTERM");
       assert.deepEqual(await exited, [0, null]);
       assert.ok(
@@ -5444,13 +6286,15 @@ for (const selection of ["explicit", "wildcard"]) {
         events.slice(retained + 3, -1).length,
         includeUnnamed ? 3 : 0
       );
-      await t.waitFor(() => assert.equal(connections.size, 0));
+      await t.waitFor(() => {
+        assert.equal(connections.size, 0);
+      });
     });
   }
 }
 
 for (const name of [undefined, "", "   "]) {
-  test(`monitor excludes missing or blank names without reading terminal messages: ${JSON.stringify(name)}`, async (t) => {
+  void test(`monitor excludes missing or blank names without reading terminal messages: ${JSON.stringify(name)}`, async (t) => {
     let nameReads = 0;
     const { connections, requests, socket } = await fixture(
       t,
@@ -5467,7 +6311,9 @@ for (const name of [undefined, "", "   "]) {
       "--thread",
       "watched"
     ]);
-    await t.waitFor(() => assert.equal(nameReads, 1));
+    await t.waitFor(() => {
+      assert.equal(nameReads, 1);
+    });
     const [owner] = connections;
     owner.send(
       JSON.stringify({
@@ -5482,17 +6328,21 @@ for (const name of [undefined, "", "   "]) {
         }
       })
     );
-    await t.waitFor(() => assert.equal(nameReads, 2));
+    await t.waitFor(() => {
+      assert.equal(nameReads, 2);
+    });
     child.kill("SIGTERM");
     assert.deepEqual(await exited, [0, null]);
-    assert.deepEqual(events, []);
+    assert.equal(events.length, 0);
     assert.ok(!requests.some(({ method }) => method === "thread/items/list"));
-    await t.waitFor(() => assert.equal(connections.size, 0));
+    await t.waitFor(() => {
+      assert.equal(connections.size, 0);
+    });
   });
 }
 
 for (const includeUnnamed of [false, true]) {
-  test(`monitor reports name-read failures honestly and retains native errors: ${includeUnnamed}`, async (t) => {
+  void test(`monitor reports name-read failures honestly and retains native errors: ${includeUnnamed}`, async (t) => {
     let nameReads = 0;
     const nativeError = {
       code: "model_not_found",
@@ -5527,7 +6377,9 @@ for (const includeUnnamed of [false, true]) {
       "--status",
       "failed"
     ]);
-    await t.waitFor(() => assert.equal(nameReads, 1));
+    await t.waitFor(() => {
+      assert.equal(nameReads, 1);
+    });
     const [owner] = connections;
     owner.send(
       JSON.stringify({
@@ -5540,7 +6392,9 @@ for (const includeUnnamed of [false, true]) {
         }
       })
     );
-    await t.waitFor(() => assert.equal(events.length, 1));
+    await t.waitFor(() => {
+      assert.equal(events.length, 1);
+    });
     assert.equal(events[0].threadName, null);
     assert.equal(events[0].turnId, "name-read-failure");
     if (includeUnnamed) {
@@ -5573,15 +6427,17 @@ for (const includeUnnamed of [false, true]) {
         params: { status: "idle", threadId: "watched" }
       })
     );
-    await t.waitFor(() =>
+    await t.waitFor(() => {
       assert.equal(
         requests.filter(({ method }) => method === "thread/turns/list").length,
         2
-      )
-    );
+      );
+    });
     child.kill("SIGTERM");
     assert.deepEqual(await exited, [0, null]);
     assert.equal(events.length, 1);
-    await t.waitFor(() => assert.equal(connections.size, 0));
+    await t.waitFor(() => {
+      assert.equal(connections.size, 0);
+    });
   });
 }
