@@ -15,6 +15,7 @@ import relativeLinksRule, {
   markdownIt
 } from "markdownlint-rule-relative-links";
 import { lint } from "markdownlint/promise";
+import { z } from "zod";
 
 import { validateIssueForms } from "../release/check-issue-forms.mjs";
 import { validatePluginVersions } from "../release/check-plugin-version.mjs";
@@ -60,6 +61,10 @@ body:
       required: true
 `;
 
+/**
+ * @param {string} filename - Markdown file path.
+ * @param {string} content - Markdown source.
+ */
 const lintRelativeLinks = async (filename, content) => {
   const result = await lint({
     config: {
@@ -75,7 +80,7 @@ const lintRelativeLinks = async (filename, content) => {
   return result[filename] ?? [];
 };
 
-test("issue form validator accepts the supported textarea schema", () => {
+await test("issue form validator accepts the supported textarea schema", () => {
   assert.deepEqual(
     validateIssueForms([
       { content: validIssueForm, source: "bug_report.yaml" }
@@ -84,7 +89,7 @@ test("issue form validator accepts the supported textarea schema", () => {
   );
 });
 
-test("issue form validator rejects malformed YAML", () => {
+await test("issue form validator rejects malformed YAML", () => {
   const errors = validateIssueForms([
     { content: "name: [\n", source: "bug_report.yaml" }
   ]);
@@ -95,16 +100,28 @@ test("issue form validator rejects malformed YAML", () => {
   );
 });
 
-test("issue form validator requires long names, top-level strings, and a body", () => {
+await test("issue form validator requires long names, top-level strings, and a body", () => {
   const content = "name: bug\ndescription: ''\nbody: []\n";
   const errors = validateIssueForms([{ content, source: "improvement.yaml" }]);
   assert.equal(errors.length, 3);
   assert.match(errors[0], /top-level description must be a non-empty string/u);
   assert.match(errors[1], /name must contain more than 3 characters/u);
   assert.match(errors[2], /top-level body must be a non-empty array/u);
+  const unicodeErrors = validateIssueForms([
+    {
+      content:
+        "name: '\u{1F600}\u{1F600}\u{1F600}'\ndescription: valid\nbody: []\n",
+      source: "unicode.yaml"
+    }
+  ]);
+  assert.ok(
+    unicodeErrors.some((error) =>
+      error.includes("name must contain more than 3 characters")
+    )
+  );
 });
 
-test("issue form validator enforces the textarea field contract and id syntax", () => {
+await test("issue form validator enforces the textarea field contract and id syntax", () => {
   const content = validIssueForm
     .replace(
       "  - type: textarea\n    id: problem",
@@ -141,7 +158,7 @@ test("issue form validator enforces the textarea field contract and id syntax", 
   assert.ok(errors.some((error) => error.includes("must require a response")));
 });
 
-test("issue form validator rejects duplicate field ids and labels", () => {
+await test("issue form validator rejects duplicate field ids and labels", () => {
   const content = validIssueForm
     .replace("id: evidence", "id: problem")
     .replace("label: Evidence", "label: Problem");
@@ -152,7 +169,7 @@ test("issue form validator rejects duplicate field ids and labels", () => {
   );
 });
 
-test("issue form names must be unique across discovered forms", () => {
+await test("issue form names must be unique across discovered forms", () => {
   const duplicateName = validIssueForm.replace(
     "name: Bug report",
     "name: BUG REPORT"
@@ -169,7 +186,7 @@ test("issue form names must be unique across discovered forms", () => {
   );
 });
 
-test("issue forms preserve the five original sections and remove Markdown templates", () => {
+await test("issue forms preserve the five original sections and remove Markdown templates", () => {
   const directory = new URL(".github/ISSUE_TEMPLATE/", repositoryRoot);
   const expectedLabels = [
     "Problem",
@@ -191,13 +208,30 @@ test("issue forms preserve the five original sections and remove Markdown templa
     }
   };
   const forms = [];
-  for (const filename of ["bug_report", "improvement"]) {
+  for (const [filename, expected] of Object.entries(expectedMetadata)) {
     const formPath = new URL(`${filename}.yaml`, directory);
     const source = `${filename}.yaml`;
     const content = readFileSync(formPath, "utf-8");
-    const form = yamlParser(content);
-    assert.equal(form.name, expectedMetadata[filename].name);
-    assert.equal(form.description, expectedMetadata[filename].description);
+    const form = z
+      .looseObject({
+        body: z.array(
+          z.looseObject({
+            attributes: z.looseObject({
+              description: z.string(),
+              label: z.string()
+            }),
+            type: z.string(),
+            validations: z
+              .looseObject({ required: z.boolean().optional() })
+              .optional()
+          })
+        ),
+        description: z.string(),
+        name: z.string()
+      })
+      .parse(yamlParser(content));
+    assert.equal(form.name, expected.name);
+    assert.equal(form.description, expected.description);
     assert.ok(!form.description.endsWith("\n"));
     assert.deepEqual(
       form.body.map((field) => field.attributes.label),
@@ -228,7 +262,7 @@ test("issue forms preserve the five original sections and remove Markdown templa
   assert.deepEqual(validateIssueForms(forms), []);
 });
 
-test("YAML block scalars preserve literal and folded text without trailing line feeds", () => {
+await test("YAML block scalars preserve literal and folded text without trailing line feeds", () => {
   const parsed = yamlParser(
     "literal: |-\n  first line\n  second line\nfolded: >-\n  first line\n  second line\n"
   );
@@ -238,11 +272,13 @@ test("YAML block scalars preserve literal and folded text without trailing line 
   assert.ok(!parsed.folded.endsWith("\n"));
 });
 
-test("relative link rule accepts existing files and headings", async (t) => {
+await test("relative link rule accepts existing files and headings", async (t) => {
   const temporaryRoot = mkdtempSync(
     path.join(tmpdir(), "codex-app-server-links-")
   );
-  t.after(() => rmSync(temporaryRoot, { force: true, recursive: true }));
+  t.after(() => {
+    rmSync(temporaryRoot, { force: true, recursive: true });
+  });
   const source = path.join(temporaryRoot, "source.md");
   const target = path.join(temporaryRoot, "target.md");
   writeFileSync(target, "# Target heading\n", "utf-8");
@@ -253,38 +289,36 @@ test("relative link rule accepts existing files and headings", async (t) => {
   assert.deepEqual(errors, []);
 });
 
-test("relative link rule rejects missing files", async (t) => {
+await test("relative link rule rejects missing files", async (t) => {
   const temporaryRoot = mkdtempSync(
     path.join(tmpdir(), "codex-app-server-links-")
   );
-  t.after(() => rmSync(temporaryRoot, { force: true, recursive: true }));
+  t.after(() => {
+    rmSync(temporaryRoot, { force: true, recursive: true });
+  });
   const source = path.join(temporaryRoot, "source.md");
   const errors = await lintRelativeLinks(source, "[Missing](./missing.md)\n");
   assert.equal(errors.length, 1);
   assert.match(errors[0].errorDetail, /should exist in the file system/u);
 });
 
-test("plugin version validation accepts matching calendar date releases", () => {
-  assert.doesNotThrow(() =>
-    validatePluginVersions("2026.10.10.07", "2026.10.10.07")
-  );
+await test("plugin version validation accepts matching calendar date releases", () => {
+  assert.doesNotThrow(() => {
+    validatePluginVersions("2026.10.10.07", "2026.10.10.07");
+  });
 });
 
-test("plugin version validation rejects invalid format, date, sequence, and parity", () => {
-  assert.throws(
-    () => validatePluginVersions("2026.10.10", "2026.10.10.01"),
-    /format/u
-  );
-  assert.throws(
-    () => validatePluginVersions("2026.02.30.01", "2026.02.30.01"),
-    /valid date/u
-  );
-  assert.throws(
-    () => validatePluginVersions("2026.10.10.00", "2026.10.10.00"),
-    /non-zero/u
-  );
-  assert.throws(
-    () => validatePluginVersions("2026.10.10.01", "2026.10.10.02"),
-    /must match/u
-  );
+await test("plugin version validation rejects invalid format, date, sequence, and parity", () => {
+  assert.throws(() => {
+    validatePluginVersions("2026.10.10", "2026.10.10.01");
+  }, /format/u);
+  assert.throws(() => {
+    validatePluginVersions("2026.02.30.01", "2026.02.30.01");
+  }, /valid date/u);
+  assert.throws(() => {
+    validatePluginVersions("2026.10.10.00", "2026.10.10.00");
+  }, /non-zero/u);
+  assert.throws(() => {
+    validatePluginVersions("2026.10.10.01", "2026.10.10.02");
+  }, /must match/u);
 });

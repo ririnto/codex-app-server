@@ -11,7 +11,7 @@ export default {
   function: (params, onError) => {
     for (const [index, line] of params.lines.entries()) {
       const match = boxDrawingPattern.exec(line);
-      if (match?.groups?.boxDrawing) {
+      if (match?.groups?.boxDrawing !== undefined) {
         onError({
           context: line.trim(),
           detail: "Use ASCII tree markers such as +-- and | instead.",

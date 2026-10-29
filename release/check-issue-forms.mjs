@@ -5,11 +5,23 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import yamlParser from "markdownlint-cli2/parsers/yaml";
 
 const fieldIdPattern = /^[A-Za-z0-9_-]+$/u;
+/**
+ * @param {unknown} value - Value to inspect.
+ * @returns {value is Record<string, unknown>} Whether the value is a mapping.
+ */
 const isMapping = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+/**
+ * @param {unknown} value - Value to inspect.
+ * @returns {value is string} Whether the value is a non-empty string.
+ */
 const nonEmptyString = (value) =>
   typeof value === "string" && value.trim() !== "";
 
+/**
+ * @param {Record<string, unknown>} form - Parsed form.
+ * @param {(message: string) => number} report - Diagnostic receiver.
+ */
 const validateTopLevel = (form, report) => {
   const { body, description, name } = form;
   for (const [key, value] of Object.entries({ description, name })) {
@@ -17,14 +29,26 @@ const validateTopLevel = (form, report) => {
       report(`top-level ${key} must be a non-empty string.`);
     }
   }
-  if (nonEmptyString(name) && [...name.trim()].length <= 3) {
-    report("top-level name must contain more than 3 characters.");
+  if (nonEmptyString(name)) {
+    let length = 0;
+    for (const _character of name.trim()) {
+      length += 1;
+    }
+    if (length <= 3) {
+      report("top-level name must contain more than 3 characters.");
+    }
   }
   if (!Array.isArray(body) || body.length === 0) {
     report("top-level body must be a non-empty array.");
   }
 };
 
+/**
+ * @param {unknown} id - Field identifier.
+ * @param {string} fieldName - Field location.
+ * @param {Set<string>} ids - Seen identifiers.
+ * @param {(message: string) => number} report - Diagnostic receiver.
+ */
 const validateFieldId = (id, fieldName, ids, report) => {
   if (nonEmptyString(id)) {
     if (!fieldIdPattern.test(id)) {
@@ -42,6 +66,12 @@ const validateFieldId = (id, fieldName, ids, report) => {
   }
 };
 
+/**
+ * @param {unknown} label - Field label.
+ * @param {string} fieldName - Field location.
+ * @param {Set<string>} labels - Seen labels.
+ * @param {(message: string) => number} report - Diagnostic receiver.
+ */
 const validateFieldLabel = (label, fieldName, labels, report) => {
   if (nonEmptyString(label)) {
     const normalizedLabel = label.trim().toLowerCase();
@@ -54,6 +84,13 @@ const validateFieldLabel = (label, fieldName, labels, report) => {
   }
 };
 
+/**
+ * @param {unknown} field - Parsed field.
+ * @param {number} index - Field index.
+ * @param {Set<string>} ids - Seen identifiers.
+ * @param {Set<string>} labels - Seen labels.
+ * @param {(message: string) => number} report - Diagnostic receiver.
+ */
 const validateTextarea = (field, index, ids, labels, report) => {
   const fieldName = `body[${index + 1}]`;
   if (!isMapping(field)) {
@@ -81,8 +118,10 @@ const validateTextarea = (field, index, ids, labels, report) => {
 
 /**
  * Validate the repository issue-form fields.
+ * @param {unknown} form - Parsed issue form.
  */
 export const validateIssueForm = (form, source = "<form>") => {
+  /** @type {string[]} */
   const errors = [];
   const report = (message) => errors.push(`${source}: ${message}`);
   if (!isMapping(form)) {
@@ -93,7 +132,9 @@ export const validateIssueForm = (form, source = "<form>") => {
   if (!Array.isArray(body) || body.length === 0) {
     return errors;
   }
+  /** @type {Set<string>} */
   const ids = new Set();
+  /** @type {Set<string>} */
   const labels = new Set();
   for (const [index, field] of body.entries()) {
     validateTextarea(field, index, ids, labels, report);
@@ -101,14 +142,20 @@ export const validateIssueForm = (form, source = "<form>") => {
   return errors;
 };
 
+/**
+ * @param {string} content - YAML source.
+ * @param {string} source - Source name for diagnostics.
+ */
 const parseIssueFormContent = (content, source) => {
   try {
     const form = yamlParser(content);
     return { errors: validateIssueForm(form, source), form, source };
   } catch (error) {
-    const line = Number.isInteger(error?.mark?.line)
-      ? error.mark.line + 1
-      : null;
+    const mark = isMapping(error) && isMapping(error.mark) ? error.mark : {};
+    const line =
+      typeof mark.line === "number" && Number.isInteger(mark.line)
+        ? mark.line + 1
+        : null;
     return {
       errors: [
         `${line === null ? source : `${source}:${line}`}: issue form must contain valid YAML.`
@@ -121,6 +168,7 @@ const parseIssueFormContent = (content, source) => {
 
 /**
  * Validate issue forms together, including unique chooser names.
+ * @param {{content: string, source: string}[]} forms - Issue form documents.
  */
 export const validateIssueForms = (forms) => {
   const parsedForms = forms.map(({ content, source }) =>
