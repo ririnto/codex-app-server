@@ -16,7 +16,7 @@ metadata:
       version: 1.32.1
       url: https://github.com/modelcontextprotocol/typescript-sdk/tree/v1.x
     Node.js system certificates:
-      url: https://nodejs.org/docs/latest-v24.x/api/cli.html#node_use_system_ca1
+      url: https://nodejs.org/docs/latest-v26.x/api/cli.html#node_use_system_ca1
     Codex plugin MCP loading:
       url: https://raw.githubusercontent.com/openai/codex/main/codex-rs/codex-mcp/src/plugin_config.rs
     Claude Code plugin MCP:
@@ -67,7 +67,7 @@ Both installs provide the same MCP server, so keep one `codex-app-server` instal
 
 ## Runtime
 
-Use Node.js 24.15 or newer on the 24.x line, npm, and a platform supporting Unix sockets.
+Use Node.js 26.13.0 or newer on the 26.x line, npm, and a platform supporting Unix sockets.
 The Codex app-server daemon must already be running with its Unix control socket available.
 The plugin starts no daemon.
 Authorized messages can wait in a process-local queue for the active turn to end.
