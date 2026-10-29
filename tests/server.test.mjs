@@ -1939,6 +1939,28 @@ const commandCatalog = {
   }))
 };
 
+await test("forwards a null process ID for buffered commands", async (t) => {
+  const { client, connections, requests } = await fixture(
+    t,
+    ({ reply }) => {
+      reply({ exitCode: 0, stderr: "", stdout: "" });
+    },
+    { catalog: commandCatalog }
+  );
+  const result = await call(client, "codex_command_exec", {
+    command: ["fixture"],
+    processId: null
+  });
+  assert.equal(result.error, false);
+  assert.deepEqual(requests.at(-1)?.params, {
+    command: ["fixture"],
+    processId: null
+  });
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
+});
+
 await test("keeps interactive command follow-ups on their originating connection and returns streamed output", async (t) => {
   /** @type {WebSocket | undefined} */
   let owner;
