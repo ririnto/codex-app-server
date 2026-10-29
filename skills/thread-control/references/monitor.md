@@ -1,4 +1,4 @@
-# Monitor Setup
+# Monitor setup
 
 Use the installed plugin executable as the watch command.
 In Claude Code, load [the input asset](../assets/monitor.json) and supply it to the native Monitor tool.
@@ -14,11 +14,15 @@ Do not replace the executable with a custom watcher.
 NODE_USE_SYSTEM_CA=1 npm exec --yes --package=husky@^9.1.7 -- npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --status idle --status failed --status systemError --timeout-seconds 1800
 ```
 
+## Select watched threads
+
 Quote `'*'` so the shell does not expand filenames.
 Replace the wildcard with repeatable `--thread AUTHORIZED_THREAD_ID` arguments when only assigned targets should be watched.
 The wildcard silently baselines every loaded-thread page, reads each thread without resuming it, and receives later native broadcasts.
 Loaded threads do not cover stored threads absent from daemon memory.
 Observation of a wildcard thread grants no authority to steer or delete it.
+
+## Select status events
 
 Use repeatable `--status` filters to select relevant events.
 The Monitor input selects idle, failed, and systemError events with the executable's built-in previous-state defaults.
@@ -28,13 +32,15 @@ It starts no daemon, acquires no writer, and refuses server-initiated requests.
 Event intake follows stdout backpressure, while a separate read-only socket handles initial and idle inspections without blocking their responses.
 Both sockets close when the watch ends.
 
-## Deadline And Ownership
+## Set the deadline and re-arm watches
 
 Set the native Monitor `timeout_ms` to 1800000 and the executable's `--timeout-seconds` to 1800 for a 30-minute watch.
 Claude Code defaults explicit watches to five minutes and allows at most 30 minutes.
 Single-prompt non-interactive runs allow at most ten minutes, so use the smaller host deadline in that mode.
 At a deadline, verify the assignment and lease are still active, then re-arm one owned watch with the same selection.
 Do not overlap watches or create an automatic endless restart loop.
+
+## Configure explicit watches
 
 The plugin registers no automatic monitors; start each watch explicitly for its authorized selection.
 Use `'*'` only when monitoring every loaded thread is explicitly authorized.
@@ -54,12 +60,14 @@ Names must contain a non-whitespace character.
 Unnamed child failures describe excluded threads, so they do not bypass name selection.
 Transport, inspection, and capability diagnostics remain visible independently of thread name and status filters.
 
+## Stop owned watches
+
 Stop the owned explicit watch through the host's native task or process cancellation tool when its assignment completes, lease expires, targets are retired, or monitoring is cancelled.
 SIGINT, SIGTERM, and the executable deadline also close its socket and exit successfully.
 Socket loss ends the monitor with exit code 1 instead of reconnecting.
 Inspect the reported transport failure and re-arm only after the authorized connection is available again.
 
-## Read The Events
+## Interpret status events
 
 Each stdout line is one JSON event.
 `threadStatus` includes `threadId`, `threadName`, `status`, and `previous`.
@@ -80,6 +88,8 @@ Unchanged states remain quiet.
 An idle event alone does not prove successful completion or delivery.
 Use events to trigger fresh tail reads instead of polling thread status.
 Read the tail and receipts before claiming either.
+
+## Interpret terminal events
 
 `turnError` has `status: "failed"`, `threadId`, `turnId`, and the native `error` when available.
 Later idle inspections, terminal completion, and non-retrying error notifications can report new failures.
@@ -109,6 +119,8 @@ With `--include-unnamed`, failed name reads preserve the original event with nul
 Suppressed unnamed terminal events do not fetch final messages.
 Transient native errors marked `willRetry` are not terminal failures.
 For errors such as `model_not_found`, preserve the native details, inspect the affected thread, and report the failed turn before changing the model or retrying under the current assignment.
+
+## Distinguish error sources
 
 A native `threadStatus` with `systemError` describes that thread's state.
 An `inspection` event with `systemError` describes a failed read and leaves other selected threads running.

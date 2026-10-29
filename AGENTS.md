@@ -1,11 +1,11 @@
-# Codex App-Server Repository Instructions
+# Codex App-Server repository instructions
 
 These instructions govern contributors and are not injected into consumer sessions.
 Keep the plugin scoped to guarded MCP access and read-only status monitoring for the existing Codex app-server.
 Use [README.md](README.md) for installation and runtime contracts.
 Use [CONTRIBUTING.md](CONTRIBUTING.md) for contribution procedures and verification evidence.
 
-## Ownership And Layout
+## Organize repository resources
 
 Keep runtime entry points at repository root and supporting runtime modules in `lib/`.
 Keep native monitor registration in `monitors/`, release gates in `release/`, and disposable fixtures in `tests/`.
@@ -16,7 +16,7 @@ Do not introduce generic top-level `scripts/`, `tools/`, or `bin/` directories.
 Update consumers and remove superseded paths together.
 Add abstractions only for a requirement or another real caller.
 
-## Development
+## Manage dependencies and tools
 
 Use the Node.js engine range declared in `package.json` and the pnpm version declared in `package.json`.
 Run `pnpm install` after dependency changes and keep the lockfile consistent.
@@ -26,30 +26,45 @@ Use caret `^x.y.z` ranges in pnpm catalogs and never pin versions with a commit 
 Keep runtime dependency versions in `package.json` so packaging needs no workspace configuration.
 Prefer maintained LTS dependency lines and use stable releases when no LTS line exists.
 Use existing Node.js, pnpm, and lint tools before adding packages or custom implementations.
+
+## Resolve resources and run lint
+
 Resolve packaged resources from the executing module rather than the caller's working directory.
 Use Ultracite as the only caller of Oxlint and Oxfmt.
+
+## Preserve regular expression behavior
+
 Use named regex capture groups and access full matches or subgroups by name.
 Use named regex backreferences and replacement references instead of positional references.
 Preserve match selection, optional groups, flags, Unicode behavior, iteration, offsets, replacement semantics, and failure behavior when changing regular expressions.
 Prefer an existing parser or literal operation when it expresses the requirement more clearly.
+
+## Preserve production behavior
+
 Inline single-use variables and logic when lint permits and behavior remains unchanged.
 Preserve evaluation order, side effects, cost, inferred types, overload selection, lazy execution, and callback contracts.
 Preserve exceptions, captured snapshots, resource lifetimes, cancellation, and cleanup semantics.
 Do not create hypothetical production helpers, expose internals, or add test seams for test convenience.
 Test references do not establish production reuse.
+
+## Maintain configuration and hooks
+
 Keep `.markdownlint-cli2.jsonc` set to `gitignore: true` and compact table-column style.
 Sort configuration object keys and preserve array order and values.
 Keep explicit Markdownlint ignores empty unless a concrete file cannot be covered by `.gitignore`.
 Declare Husky as a catalog-backed development dependency, set `prepare` to `husky`, and keep real hooks under `.husky/`.
 Have the hooks invoke the package's pre-commit and pre-push scripts.
 Do not disable rules, add suppressions, or weaken configuration to make checks pass.
+
+## Write and structure code
+
 Use multiline JSDoc for exported declarations and public class members.
 Keep function bodies free of explanatory inline comments and blank lines.
 Prefer immutable bindings and preserve exception timing, async ordering, and cleanup semantics.
 Prefer condition inversion over mid-function exits when behavior stays intact, subject to lint and formatter output.
 Use `.yaml` unless the consuming platform requires another filename.
 
-## Documentation
+## Write documentation and instructions
 
 Write repository guidance and agent-to-agent communication in concise English.
 Write complete prose sentences, one sentence per source line, and separate paragraphs with blank lines.
@@ -64,6 +79,8 @@ Separate instructions, supplied evidence, and examples while preserving constrai
 
 ## Validation
 
+### Validate changes
+
 Run `pnpm run check` for mixed changes and repository-wide validation.
 Use named `check:*` commands for bounded changes whose unaffected proof remains valid.
 Run `claude plugin validate .` and `claude plugin validate .claude-plugin/plugin.json` after packaged-content changes.
@@ -71,12 +88,12 @@ Keep live-daemon mutations out of tests and use the existing disposable Unix-soc
 Check process, transport, listener, timer, queue, and temporary-directory cleanup on changed lifecycle boundaries.
 Make startup, shutdown, cancellation, and retry operations idempotent after partial setup, so repeated cleanup converges without orphaning owned resources.
 
-## Release And Publication
+## Publish releases and changes
 
 Host manifest and package versions follow [the release procedure](README.md#version-updates).
 Publish authorized changes through the workflow in [CONTRIBUTING.md](CONTRIBUTING.md#commits-and-pull-requests).
 
-## Runtime And Catalog Maintenance
+## Generate and expose protocol schemas
 
 Keep protocol schemas generated from the installed Codex CLI rather than committing a snapshot.
 Share concurrent generation and successful schema caches between discovery and native validation.
@@ -89,28 +106,41 @@ Preserve curated adapters and their guards alongside native methods.
 Use native host tool search without custom tool caps, paging, or generic dispatch.
 Unknown methods must retain mutating annotations until their behavior is reviewed.
 Keep active-turn inspection and expected turn IDs in the curated steering tools.
+
+## Manage connection-scoped operations
+
 Keep connection-scoped commands and watches attached to their originating sockets.
 Return streamed command output and forward filesystem changes through native MCP logging.
 Propagate cancellation and retire owned sockets, listeners, and identifiers when operations or MCP transport end.
 Propagate watch backpressure to native input and cancel pending stdout drains during transport closure.
+
+## Enforce method policy
 
 Maintain shared method policy in `lib/policy.mjs`.
 Refused methods may have discoverable tools, but their callbacks must refuse before validation or connecting.
 Keep thread archive, unarchive, and delete on the native CLI.
 Server-initiated approvals remain refused by `lib/connection.mjs`.
 
+## Test protocol and issue behavior
+
 Extend the existing disposable-socket tests for schema conversion, filtering, fallback, and guarded behavior.
 Test issue-form structure and behavior without pinning exact descriptive prose.
+
+## Deliver active-thread messages
 
 Keep active-thread sends on the process-local queue unless supported steering is explicitly selected.
 Recheck idle state before queued delivery and preserve native writer refusals without retries.
 Keep delivery receipts bounded and close queue connections on cancellation, timeout, or transport closure.
 Never interpret refused server requests as completion notifications.
 
+## Monitor thread status
+
 Keep packaged monitors on the native Claude Code Monitor contract.
 Use read-only native status notifications and event-driven reads, without resuming watched threads.
 Keep transport failures distinct from thread systemError and terminal failed outcomes.
 Never interpret refused server requests as status notifications.
+
+## Maintain the thread-control skill
 
 Keep the thread-control skill and its conditional monitor setup self-contained in `skills/thread-control/`.
 Preserve valid Agent Skills frontmatter and manifest registration.
