@@ -18,7 +18,7 @@ Add abstractions only for a requirement or another real caller.
 
 ## Development
 
-Use the Node.js engine range declared in `package.json` and the pnpm version declared in `.tool-versions`.
+Use the Node.js engine range declared in `package.json` and the pnpm version declared in `package.json`.
 Run `pnpm install` after dependency changes and keep the lockfile consistent.
 Keep runtime dependencies npm-compatible because installed plugins use local `npm exec` packaging.
 Store shared development dependency versions in `pnpm-workspace.yaml` and reference its catalogs.

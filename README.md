@@ -398,7 +398,7 @@ The plugin adds no dedicated cleanup tools.
 
 ## Development
 
-Use the Node.js engine range declared in `package.json` and the pnpm version declared in `.tool-versions`.
+Use the Node.js engine range declared in `package.json` and the pnpm version declared in `package.json`.
 Install locked dependencies and run the aggregate gate.
 
 ```sh
