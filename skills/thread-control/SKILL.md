@@ -1,7 +1,7 @@
 ---
 name: thread-control
 description: Use when an authorized task needs to inspect, steer, monitor, or retire Codex threads through the running app-server, including coordinating active writers and verifying message delivery.
-compatibility: Requires this plugin's MCP tools, Node.js 24.x, npm, the installed Codex CLI, and an existing Unix app-server control socket.
+compatibility: Requires this plugin's MCP tools, Node.js 26.13.0 or newer on the 26.x line, npm, the installed Codex CLI, and an existing Unix app-server control socket.
 ---
 
 # Thread Control
