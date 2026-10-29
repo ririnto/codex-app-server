@@ -1,4 +1,4 @@
-# Native Thread Retirement
+# Native thread retirement
 
 Retire only the exact authorized thread after its pending work ends and its owner releases the lease.
 Read its latest request and outcome before deciding that it is complete.
@@ -9,7 +9,7 @@ Establish the installed command's complete affected set, including any descendan
 Require authority and preservation evidence for every affected identity before archive or delete.
 Preserve the thread when descendant coverage, ownership, or native effects remain unknown.
 
-## Archive Before Delete
+## Archive before deletion
 
 Inspect the installed `codex archive --help` and `codex delete --help` before choosing native commands.
 Use the same daemon and transport that own the inspected thread.
@@ -27,6 +27,8 @@ Use `codex_methods` to inspect the current `thread/list` schema, then its discov
 Preserve an archive refusal and let the owning host release its writer instead of bypassing the lock.
 An archive receipt does not prove filesystem removal or release every associated resource.
 
+## Delete authorized threads
+
 Only after explicit human authority covers permanent deletion, confirm that the transcript and recovery state are no longer needed.
 Deletion authority must cover each affected descendant as well as the selected parent.
 Preserve any action-time confirmation required by the installed native command.
@@ -40,7 +42,7 @@ Distinguish a verified not-found result from a transport, permission, or databas
 Check that protected threads and preserved associations remain accessible.
 Report unverified effects instead of claiming successful permanent deletion.
 
-## Other Resource Boundaries
+## Retire associated resources
 
 Thread archive and delete do not authorize Project, Session, attachment, or physical worktree deletion.
 Apply each resource's native lifecycle contract and ownership checks separately.

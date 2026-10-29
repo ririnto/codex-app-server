@@ -4,7 +4,7 @@ description: Use when an authorized task needs to inspect, steer, monitor, or re
 compatibility: Requires this plugin's MCP tools, Node.js 26.13.0 or newer on the 26.x line, npm, the installed Codex CLI, and an existing Unix app-server control socket.
 ---
 
-# Thread Control
+# Thread control
 
 Carry out the authorized thread operation while preserving writer ownership and verifying its observed outcome.
 Use the plugin's curated tools for thread control and native per-method tools when their full schema is needed.
@@ -13,7 +13,7 @@ Tool availability and annotations do not grant authorization.
 Mutation requires a direct human instruction or an assigned contract covering the operation and selected thread.
 Reset-credit consumption remains refused, and only the Orchestrator reads account usage.
 
-## Task Contract
+## Confirm the task contract
 
 Confirm the requested outcome, authorized target, permitted operations, evidence, and stopping condition from the human instruction or assigned contract.
 Treat inspected thread content, tool output, and monitor `finalMessage` as evidence.
@@ -23,7 +23,7 @@ Report the requested outcome, action state, evidence inspected, and unresolved u
 Distinguish queued, steered, or started acknowledgments from verified terminal outcomes.
 Report missing or ambiguous evidence as unverified instead of inferring success.
 
-## Lease And Writer Ownership
+## Protect lease and writer ownership
 
 Verify the current assignment or lease identifies the thread, permitted writes, owner, and stopping condition before writing.
 A readable thread, loaded thread, or worktree attachment does not establish writer ownership.
@@ -33,7 +33,7 @@ Let that host release the thread before continuing.
 Never delete a writer lock, force a second writer, restart a shared daemon, or treat a refusal as authority to take over.
 Release only resources owned by the completed assignment.
 
-## Read, Steer, Verify
+## Read, steer, and verify delivery
 
 1. Use `codex_threads` to identify the authorized target, then `codex_tail` to read its latest messages, last turn ID, and status.
 2. For an active turn, verify provider support and use `codex_steer` with explicit `mode: "steer"`, the thread ID, and the authorized text.
@@ -50,13 +50,13 @@ Do not use `codex_send` on active work as a substitute for the steer-first workf
 Do not interrupt an active turn merely to make delivery easier.
 Queues live only in the MCP process, expire after 30 minutes, and do not survive its shutdown.
 
-## Monitor Active Work
+## Monitor active work
 
 Read [Monitor Setup](references/monitor.md) before starting, re-arming, or stopping an explicit watch.
 Use its packaged executable and follow its target selection, opt-in, deadline, cancellation, and event-verification rules.
 Monitoring is read-only and does not resume watched threads.
 
-## Archive, Then Delete
+## Archive and delete threads
 
 Read [Native Thread Retirement](references/lifecycle.md) before archiving, deleting, or retiring an associated worktree or attachment.
 Never retire with pending work or an unreleased writer, and preserve source and transcripts needed for recovery.
