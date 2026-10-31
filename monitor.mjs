@@ -65,7 +65,7 @@ const main = async () => {
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
-  const timer = timeout === null ? null : setTimeout(stop, timeout * 1000);
+  const timer = timeout === null ? undefined : setTimeout(stop, timeout * 1000);
   try {
     await watchThreads({
       emit: async (event, signal) => {

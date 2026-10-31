@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import yamlParser from "markdownlint-cli2/parsers/yaml";
+import { load as yamlParser } from "js-yaml";
 import relativeLinksRule, {
   markdownIt
 } from "markdownlint-rule-relative-links";
@@ -129,6 +129,7 @@ await test("the installed-root skill retains valid metadata, conditional referen
   const skill = await readFile(path.join(directory, "SKILL.md"), "utf-8");
   const match = /^---\r?\n(?<yaml>[\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(skill);
   assert.ok(match);
+  assert.ok(match.groups);
   const metadata = z
     .looseObject({
       description: z.string(),

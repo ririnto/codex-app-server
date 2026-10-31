@@ -75,7 +75,7 @@ const registerTool = (name, config, handler) => {
       name
     },
     handler: async (args, extra) =>
-      handler(await schema.parseAsync(args ?? {}), extra)
+      await handler(await schema.parseAsync(args ?? {}), extra)
   });
 };
 const registry = Object.assign(tools, { registerTool });

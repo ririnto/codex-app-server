@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { main } from "markdownlint-cli2";
+import { execa } from "execa";
 import { lint } from "markdownlint/sync";
 
 import boxDrawing from "../rules/no-box-drawing.ts";
@@ -84,25 +84,25 @@ await test("the repository CLI configuration loads and enforces the diagram rule
   });
   const filename = path.join(directory, "diagram.md");
   await writeFile(filename, "# Diagram\n\n```text\n+-- child\n```\n");
-  const args = {
-    argv: ["--config", path.join(root, ".markdownlint-cli2.jsonc"), filename],
-    directory: root
-  };
-  assert.equal(await main(args), 0);
+  const args = [
+    "--config",
+    path.join(root, ".markdownlint-cli2.jsonc"),
+    filename
+  ];
+  const validResult = await execa("markdownlint-cli2", args, {
+    cwd: root,
+    preferLocal: true
+  });
+  assert.equal(validResult.exitCode, 0);
   await writeFile(
     filename,
     "# Diagram\n\n```text\n\u2514\u2500\u2500 child\n```\n"
   );
-  /** @type {string[]} */
-  const errors = [];
-  assert.equal(
-    await main({
-      ...args,
-      logError: (error) => {
-        errors.push(error);
-      }
-    }),
-    1
-  );
-  assert.ok(errors.some((error) => error.includes("docs/no-box-drawing")));
+  const result = await execa("markdownlint-cli2", args, {
+    cwd: root,
+    preferLocal: true,
+    reject: false
+  });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, /docs\/no-box-drawing/u);
 });

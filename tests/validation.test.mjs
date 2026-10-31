@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import yamlParser from "markdownlint-cli2/parsers/yaml";
+import { load as yamlParser } from "js-yaml";
 import relativeLinksRule, {
   markdownIt
 } from "markdownlint-rule-relative-links";
@@ -263,9 +263,13 @@ await test("issue forms preserve the five original sections and remove Markdown 
 });
 
 await test("YAML block scalars preserve literal and folded text without trailing line feeds", () => {
-  const parsed = yamlParser(
-    "literal: |-\n  first line\n  second line\nfolded: >-\n  first line\n  second line\n"
-  );
+  const parsed = z
+    .object({ folded: z.string(), literal: z.string() })
+    .parse(
+      yamlParser(
+        "literal: |-\n  first line\n  second line\nfolded: >-\n  first line\n  second line\n"
+      )
+    );
   assert.equal(parsed.literal, "first line\nsecond line");
   assert.equal(parsed.folded, "first line second line");
   assert.ok(!parsed.literal.endsWith("\n"));
@@ -299,6 +303,7 @@ await test("relative link rule rejects missing files", async (t) => {
   const source = path.join(temporaryRoot, "source.md");
   const errors = await lintRelativeLinks(source, "[Missing](./missing.md)\n");
   assert.equal(errors.length, 1);
+  assert.ok(typeof errors[0].errorDetail === "string");
   assert.match(errors[0].errorDetail, /should exist in the file system/u);
 });
 
