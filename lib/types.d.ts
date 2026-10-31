@@ -17,7 +17,7 @@ export interface ToolRegistry {
     handler: (
       args: z.output<z.ZodObject<T>>,
       extra: { signal: AbortSignal }
-    ) => unknown
+    ) => Promise<Record<string, unknown>> | Record<string, unknown>
   ) => void;
 }
 
@@ -29,7 +29,7 @@ export interface RegisteredTool {
   handler: (
     args: Record<string, unknown>,
     extra: { signal: AbortSignal }
-  ) => unknown;
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>;
   method?: string;
 }
 

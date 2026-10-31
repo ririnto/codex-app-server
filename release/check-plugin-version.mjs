@@ -10,15 +10,19 @@ const versionPattern =
 
 /**
  * Validate matching host plugin versions in yyyy.mm.dd.seq format.
+ * @param {unknown} claudeVersion - Claude host version from the manifest.
+ * @param {unknown} codexVersion - Codex host version from the manifest.
  */
 export const validatePluginVersions = (claudeVersion, codexVersion) => {
-  for (const [host, version] of [
+  /** @type {Array<[string, unknown]>} */
+  const versions = [
     ["Claude", claudeVersion],
     ["Codex", codexVersion]
-  ]) {
+  ];
+  for (const [host, version] of versions) {
     const match =
       typeof version === "string" ? versionPattern.exec(version) : null;
-    if (!match) {
+    if (!match?.groups) {
       throw new Error(`${host} plugin version must use yyyy.mm.dd.seq format.`);
     }
     const {
@@ -73,7 +77,7 @@ if (
     );
   } catch (error) {
     process.stderr.write(
-      `Plugin version validation failed: ${error.message}\n`
+      `Plugin version validation failed: ${error instanceof Error ? error.message : String(error)}\n`
     );
     process.exitCode = 1;
   }

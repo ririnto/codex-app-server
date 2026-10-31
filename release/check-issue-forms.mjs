@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import yamlParser from "markdownlint-cli2/parsers/yaml";
+import { load as yamlParser } from "js-yaml";
 
 const fieldIdPattern = /^[A-Za-z0-9_-]+$/u;
 /**
@@ -123,6 +123,7 @@ const validateTextarea = (field, index, ids, labels, report) => {
 export const validateIssueForm = (form, source = "<form>") => {
   /** @type {string[]} */
   const errors = [];
+  /** @param {string} message - Validation error. */
   const report = (message) => errors.push(`${source}: ${message}`);
   if (!isMapping(form)) {
     return [`${source}: issue form must be a YAML mapping.`];
@@ -177,7 +178,7 @@ export const validateIssueForms = (forms) => {
   const errors = parsedForms.flatMap(({ errors: formErrors }) => formErrors);
   const names = new Set();
   for (const { form, source } of parsedForms) {
-    if (nonEmptyString(form?.name)) {
+    if (isMapping(form) && nonEmptyString(form.name)) {
       const name = form.name.trim().toLowerCase();
       if (names.has(name)) {
         errors.push(
