@@ -2,6 +2,7 @@ catalog:
   "@types/node": ^26.6.6
   "@types/ws": ^8.18.2
   husky: ^9.1.7
+  katex: ^0.19.1
   markdownlint: ^0.42.0
   markdownlint-cli2: ^0.24.0
   markdownlint-rule-relative-links: ^5.1.4
@@ -15,4 +16,4 @@ catalog:
 minimumReleaseAge: 480
 
 overrides:
-  katex: ^0.19.1
+  katex: "catalog:"
