@@ -15,4 +15,4 @@ catalog:
 minimumReleaseAge: 480
 
 overrides:
-  katex: ^0.19.0
+  katex: ^0.19.1
