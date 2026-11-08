@@ -8,7 +8,7 @@ Use [CONTRIBUTING.md](CONTRIBUTING.md) for contribution procedures and verificat
 ## Organize repository resources
 
 Keep runtime entry points at repository root and supporting runtime modules in `lib/`.
-Keep native monitor registration in `monitors/`, release gates in `release/`, and disposable fixtures in `tests/`.
+Keep native monitor registration in `monitor.mjs` and `lib/monitor.mjs`, release gates in `release/`, and disposable fixtures in `tests/`.
 Keep lint rules in `rules/` and GitHub automation in `.github/`.
 Keep consumer workflows in `skills/` and declare that directory in both host manifests.
 Put skill-owned executable helpers in the owning skill's `scripts/` directory when helpers are needed.
