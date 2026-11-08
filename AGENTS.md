@@ -49,6 +49,18 @@ Do not create hypothetical production helpers, expose internals, or add test sea
 Adapt tests to actual production interfaces and behavior.
 Test references do not establish production reuse.
 
+## Measure and report performance
+
+Lead with a verdict of faster, slower, no measurable difference, or inconclusive.
+Report the measurement with its unit, run count, range, and the limiter that explains the result.
+Count failures and verify that outputs are correct.
+For comparisons, alternate at least five runs per side and report the median and range.
+Use production-equivalent settings for each side and check results against physical and work limits.
+Measure the end-to-end path a user waits on and report each micro result as a share of that path.
+Confirm that the work ran inside the timed region.
+Identify any one-run ballpark as one run.
+Call the result inconclusive when a side is untuned or correctness, timed work, or the limiter cannot be established.
+
 ## Maintain configuration and hooks
 
 Keep `.markdownlint-cli2.jsonc` set to `gitignore: true` and compact table-column style.

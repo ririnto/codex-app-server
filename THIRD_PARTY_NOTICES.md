@@ -26,7 +26,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## Lifecycle Guidance
+## Lifecycle and Benchmark Guidance
+
+The lifecycle guidance and benchmark checklist guidance adapt material from pstack.
 
 ```text
 MIT License
