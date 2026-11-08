@@ -55,10 +55,11 @@ Lead with a verdict of faster, slower, no measurable difference, or inconclusive
 Report the measurement with its unit, run count, range, and the limiter that explains the result.
 Count failures and verify that outputs are correct.
 For comparisons, alternate at least five runs per side and report the median and range.
+Use production-equivalent settings for each side and check results against physical and work limits.
 Measure the end-to-end path a user waits on and report each micro result as a share of that path.
 Confirm that the work ran inside the timed region.
 Identify any one-run ballpark as one run.
-Call the result inconclusive when correctness, timed work, or the limiter cannot be established.
+Call the result inconclusive when a side is untuned or correctness, timed work, or the limiter cannot be established.
 
 ## Maintain configuration and hooks
 
