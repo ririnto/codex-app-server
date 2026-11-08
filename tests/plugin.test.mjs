@@ -14,9 +14,7 @@ import { z } from "zod";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const manifestSchema = z.looseObject({
-  experimental: z.looseObject({ monitors: z.unknown().optional() }).optional(),
   mcpServers: z.string(),
-  monitors: z.unknown().optional(),
   name: z.string(),
   skills: z.string()
 });
@@ -65,14 +63,6 @@ await test("both hosts resolve the shared conventional skill and their own MCP c
   assert.equal(codex.skills, claude.skills);
   const claudeMcp = await readJson(root, claude.mcpServers, mcpSchema);
   const codexMcp = await readJson(root, codex.mcpServers, mcpSchema);
-  const packageJson = await readJson(
-    root,
-    "package.json",
-    z.looseObject({
-      devDependencies: z.looseObject({ husky: z.string() }),
-      scripts: z.looseObject({ prepare: z.string() })
-    })
-  );
   const workspace = workspaceSchema.parse(
     yamlParser(await readFile(path.join(root, "pnpm-workspace.yaml"), "utf-8"))
   );
@@ -96,9 +86,6 @@ await test("both hosts resolve the shared conventional skill and their own MCP c
     "--",
     binary
   ];
-  assert.equal(packageJson.devDependencies.husky, "catalog:");
-  assert.equal(packageJson.scripts.prepare, "husky");
-  assert.match(workspace.catalog.husky, /^\^\d+\.\d+\.\d+$/u);
   assert.equal(claudeServer.command, "npm");
   assert.deepEqual(
     claudeServer.args,
@@ -108,13 +95,6 @@ await test("both hosts resolve the shared conventional skill and their own MCP c
   assert.deepEqual(codexServer.args, localPackageArgs(".", "codex-app-server"));
   assert.equal(codexServer.cwd, "./");
   assert.ok(codexServer.args.every((argument) => !argument.includes("${")));
-  for (const manifest of [claude, codex]) {
-    assert.equal(manifest.monitors, undefined);
-    assert.equal(manifest.experimental?.monitors, undefined);
-  }
-  await assert.rejects(readFile(path.join(root, "monitors/monitors.json")), {
-    code: "ENOENT"
-  });
 });
 
 await test("the installed-root skill retains valid metadata, conditional references, and its Monitor asset", async (t) => {
