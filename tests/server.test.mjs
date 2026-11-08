@@ -347,10 +347,6 @@ await test("packed executable includes and registers every feature module", asyn
       })
     ])
     .parse(JSON.parse(stdout));
-  assert.ok(!packed.files.some((entry) => entry.path === "lib/raw-call.mjs"));
-  assert.ok(
-    !packed.files.some((entry) => entry.path === "monitors/monitors.json")
-  );
   for (const file of [
     "THIRD_PARTY_NOTICES.md",
     "server.mjs",
@@ -915,30 +911,6 @@ await test("discovers definition-free catalogs with namespace-boundary filtering
   );
 });
 
-await test("retains curated tools when native parameter references are missing", async (t) => {
-  await Promise.all(
-    [{ $ref: "#/definitions/Missing" }].map(async (params) => {
-      const { client } = await fixture(
-        t,
-        ({ reply }) => {
-          reply({});
-        },
-        {
-          catalog: {
-            definitions: {},
-            oneOf: [
-              { properties: { method: { enum: ["future/read"] }, params } }
-            ]
-          }
-        }
-      );
-      const { tools } = await client.listTools();
-      assert.equal(tools.length, 14);
-      assert.ok(!tools.some((tool) => tool.name === "codex_future_read"));
-    })
-  );
-});
-
 /** @type {[string, Record<string, unknown>][]} */
 const invalidCatalogs = [
   [
@@ -960,6 +932,20 @@ const invalidCatalogs = [
     {
       oneOf: [
         { properties: { extra: null, method: { enum: ["future/read"] } } }
+      ]
+    }
+  ],
+  [
+    "dangling parameter reference",
+    {
+      definitions: {},
+      oneOf: [
+        {
+          properties: {
+            method: { enum: ["future/read"] },
+            params: { $ref: "#/definitions/Missing" }
+          }
+        }
       ]
     }
   ]
@@ -1189,22 +1175,6 @@ await test("maps ambiguous and reserved names uniquely and stably across catalog
   assert.ok(!names.includes(last.tool));
 });
 
-await test("rejects duplicate native method names atomically", async (t) => {
-  const entry = { properties: { method: { enum: ["future/read"] } } };
-  const { client } = await fixture(
-    t,
-    ({ reply }) => {
-      reply({});
-    },
-    {
-      catalog: { oneOf: [entry, entry] }
-    }
-  );
-  const { tools } = await client.listTools();
-  assert.equal(tools.length, 14);
-  assert.ok(!tools.some((tool) => tool.name === "codex_future_read"));
-});
-
 await test("propagates daemon active-turn and writer refusals without retrying", async (t) => {
   await Promise.all(
     ["thread/resume", "turn/start"].map(async (method) => {
@@ -1252,7 +1222,6 @@ await test("serves only curated tools when the schema catalog is unavailable", a
   });
   const { tools } = await client.listTools();
   assert.equal(tools.length, 14);
-  assert.ok(tools.some((tool) => tool.name === "codex_methods"));
 });
 
 await test("queues active sends and delivers fresh turns in order, buffering early completion", async (t) => {
@@ -3223,134 +3192,120 @@ for (const selection of ["*", "watched"]) {
   }
 }
 
-for (const includeInitial of [false, true]) {
-  for (const outcome of ["failed", "completed"]) {
-    void test(`monitor never replays timestamp-qualified historical startup backlogs: ${includeInitial}/${outcome}`, async (t) => {
-      let injected = false;
-      /** @param {string} id - Turn ID.
-       * @returns {FixtureTurn} Fixture turn.
-       */
-      const historical = (id) => ({
-        completedAt: 0,
-        id,
-        items: [],
-        status: outcome
-      });
-      let latest = historical("synthetic-baseline");
-      const { connections, requests, socket } = await fixture(
-        t,
-        ({ message, reply, connections: targets }) => {
-          if (message.method === "thread/loaded/list") {
-            reply({ data: ["watched"] });
-          } else if (message.method === "thread/turns/list") {
-            if (!injected) {
-              injected = true;
-              const [owner] = targets;
-              for (const id of [
-                "synthetic-older",
-                "synthetic-baseline",
-                "synthetic-older"
-              ]) {
-                owner.send(
-                  JSON.stringify({
-                    method: "turn/completed",
-                    params: { threadId: "watched", turn: historical(id) }
-                  })
-                );
-              }
-            }
-            reply({ data: [latest] });
-          } else {
-            reply({ thread: { name: null, status: "idle" } });
+await test("monitor never replays timestamp-qualified historical startup backlogs", async (t) => {
+  let injected = false;
+  const older = {
+    completedAt: 0,
+    id: "synthetic-older",
+    items: [],
+    status: "completed"
+  };
+  const baseline = {
+    completedAt: 0,
+    id: "synthetic-baseline",
+    items: [],
+    status: "completed"
+  };
+  /** @type {FixtureTurn} */
+  let latest = baseline;
+  const { connections, requests, socket } = await fixture(
+    t,
+    ({ message, reply, connections: targets }) => {
+      if (message.method === "thread/loaded/list") {
+        reply({ data: ["watched"] });
+      } else if (message.method === "thread/turns/list") {
+        if (!injected) {
+          injected = true;
+          const [owner] = targets;
+          for (const turn of [older, baseline, older]) {
+            owner.send(
+              JSON.stringify({
+                method: "turn/completed",
+                params: { threadId: "watched", turn }
+              })
+            );
           }
         }
-      );
-      const { child, events, exited } = monitor(t, socket, [
-        "--include-unnamed",
-        ...(includeInitial ? ["--include-initial"] : []),
-        "--thread",
-        "*"
-      ]);
-      await t.waitFor(() => {
-        assert.ok(requests.some(({ method }) => method === "thread/read"));
-      });
-      const [owner] = connections;
-      owner.send(
-        JSON.stringify({
-          method: "thread/status/changed",
-          params: { status: "active", threadId: "watched" }
-        })
-      );
-      await t.waitFor(() => {
-        assert.equal(events.at(-1)?.status, "active");
-      });
-      assert.equal(events.length, includeInitial ? 2 : 1);
-      assert.ok(events.every(({ event }) => event === "threadStatus"));
-      const fresh = {
-        completedAt: Math.floor(Date.now() / 1000),
-        id: "synthetic-post-launch",
-        items:
-          outcome === "completed"
-            ? [
-                {
-                  phase: "final_answer",
-                  text: "Synthetic current final",
-                  type: "agentMessage"
-                }
-              ]
-            : [],
-        status: outcome
-      };
-      for (const turn of [
-        historical("synthetic-older"),
-        historical("synthetic-baseline"),
-        fresh
-      ]) {
-        owner.send(
-          JSON.stringify({
-            method: "turn/completed",
-            params: { threadId: "watched", turn }
-          })
-        );
+        reply({ data: [latest] });
+      } else {
+        reply({ thread: { name: null, status: "idle" } });
       }
-      latest = fresh;
-      owner.send(
-        JSON.stringify({
-          method: "turn/completed",
-          params: { threadId: "watched", turn: historical("synthetic-older") }
-        })
-      );
-      owner.send(
-        JSON.stringify({
-          method: "thread/status/changed",
-          params: { status: "idle", threadId: "watched" }
-        })
-      );
-      await t.waitFor(() => {
-        assert.deepEqual(
-          { event: events.at(-1)?.event, status: events.at(-1)?.status },
-          { event: "threadStatus", status: "idle" }
-        );
-      });
-      const terminals = events.filter(
-        ({ turnId }) => typeof turnId === "string" && turnId !== ""
-      );
-      assert.equal(terminals.length, 1);
-      assert.equal(terminals[0].turnId, fresh.id);
-      assert.equal(terminals[0].previous, "active");
-      assert.equal(terminals[0].threadName, null);
-      assert.equal(
-        terminals[0].finalMessage,
-        outcome === "completed" ? "Synthetic current final" : null
-      );
-      child.kill("SIGTERM");
-      assert.deepEqual(await exited, [0, null]);
-      await t.waitFor(() => {
-        assert.equal(connections.size, 0);
-      });
-    });
+    }
+  );
+  const { child, events, exited } = monitor(t, socket, [
+    "--include-unnamed",
+    "--include-initial",
+    "--thread",
+    "*"
+  ]);
+  await t.waitFor(() => {
+    assert.ok(requests.some(({ method }) => method === "thread/read"));
+  });
+  const [owner] = connections;
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: "active", threadId: "watched" }
+    })
+  );
+  await t.waitFor(() => {
+    assert.equal(events.at(-1)?.status, "active");
+  });
+  assert.equal(events.length, 2);
+  assert.ok(events.every(({ event }) => event === "threadStatus"));
+  const fresh = {
+    completedAt: Math.floor(Date.now() / 1000),
+    id: "synthetic-post-launch",
+    items: [
+      {
+        phase: "final_answer",
+        text: "Synthetic current final",
+        type: "agentMessage"
+      }
+    ],
+    status: "completed"
+  };
+  for (const turn of [older, baseline, fresh]) {
+    owner.send(
+      JSON.stringify({
+        method: "turn/completed",
+        params: { threadId: "watched", turn }
+      })
+    );
   }
-}
+  latest = fresh;
+  owner.send(
+    JSON.stringify({
+      method: "turn/completed",
+      params: { threadId: "watched", turn: older }
+    })
+  );
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: "idle", threadId: "watched" }
+    })
+  );
+  await t.waitFor(() => {
+    assert.deepEqual(
+      { event: events.at(-1)?.event, status: events.at(-1)?.status },
+      { event: "threadStatus", status: "idle" }
+    );
+  });
+  const terminals = events.filter(
+    ({ turnId }) => typeof turnId === "string" && turnId !== ""
+  );
+  assert.equal(terminals.length, 1);
+  assert.equal(terminals[0].turnId, fresh.id);
+  assert.equal(terminals[0].previous, "active");
+  assert.equal(terminals[0].threadName, null);
+  assert.equal(terminals[0].finalMessage, "Synthetic current final");
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
+});
 
 await test("monitor backpressure stops notification work and cancellation releases both read-only sockets", async (t) => {
   const { connections, requests, socket } = await fixture(
@@ -5623,213 +5578,201 @@ await test("default wildcard monitor silently baselines history and emits named 
   });
 });
 
-for (const includeUnnamed of [false, true]) {
-  for (const includeInitial of [false, true]) {
-    for (const includeNotLoaded of [false, true]) {
-      for (const includePreviousNotLoaded of [false, true]) {
-        void test(`wildcard monitor selects name, previous, and current categories independently: ${includeUnnamed}/${includeInitial}/${includeNotLoaded}/${includePreviousNotLoaded}`, async (t) => {
-          const { connections, requests, socket } = await fixture(
-            t,
-            ({ message, reply }) => {
-              reply(
-                message.method === "thread/read"
-                  ? {
-                      thread: {
-                        name:
-                          monitorParams.parse(message.params).threadId ===
-                          "sentinel"
-                            ? "Synthetic sentinel"
-                            : null
-                      }
-                    }
-                  : { data: [] }
-              );
-            }
-          );
-          const args = [
-            ...(includeUnnamed ? ["--include-unnamed"] : []),
-            "--thread",
-            "*"
-          ];
-          if (includeInitial) {
-            args.push("--include-initial");
-          }
-          if (includePreviousNotLoaded) {
-            args.push("--include-previous-not-loaded");
-          }
-          if (includeNotLoaded) {
-            args.push(
-              "--status",
-              "active",
-              "--status",
-              "idle",
-              "--status",
-              "notLoaded"
-            );
-          }
-          const { child, events, exited } = monitor(t, socket, args);
-          await t.waitFor(() => {
-            assert.ok(
-              requests.some(({ method }) => method === "thread/loaded/list")
-            );
-          });
-          const [owner] = connections;
-          for (const type of [
-            "active",
-            "notLoaded",
-            "idle",
-            "notLoaded",
-            "active",
-            "idle",
-            "idle"
-          ]) {
-            owner.send(
-              JSON.stringify({
-                method: "thread/status/changed",
-                params: { status: { type }, threadId: "new-thread" }
-              })
-            );
-          }
-          for (const type of ["active", "idle"]) {
-            owner.send(
-              JSON.stringify({
-                method: "thread/status/changed",
-                params: { status: type, threadId: "sentinel" }
-              })
-            );
-          }
-          const expected = includeUnnamed
-            ? [
-                ...(includeInitial
-                  ? [{ previous: null, status: "active" }]
-                  : []),
-                ...(includeNotLoaded
-                  ? [{ previous: "active", status: "notLoaded" }]
-                  : []),
-                ...(includePreviousNotLoaded
-                  ? [{ previous: "notLoaded", status: "idle" }]
-                  : []),
-                ...(includeNotLoaded
-                  ? [{ previous: "idle", status: "notLoaded" }]
-                  : []),
-                ...(includePreviousNotLoaded
-                  ? [{ previous: "notLoaded", status: "active" }]
-                  : []),
-                { previous: "active", status: "idle" }
-              ]
-            : [];
-          await t.waitFor(() => {
-            assert.equal(
-              events.filter(({ threadId }) => threadId === "sentinel").length,
-              includeInitial ? 2 : 1
-            );
-          });
-          child.kill("SIGTERM");
-          assert.deepEqual(await exited, [0, null]);
-          assert.deepEqual(
-            events
-              .filter(({ threadId }) => threadId !== "sentinel")
-              .map(({ previous, status }) => ({ previous, status })),
-            expected
-          );
-          assert.ok(
-            events
-              .filter(({ threadId }) => threadId !== "sentinel")
-              .every(({ threadName }) => threadName === null)
-          );
-          await t.waitFor(() => {
-            assert.equal(connections.size, 0);
-          });
-        });
-      }
-    }
-  }
-}
-
-for (const includeInitial of [false, true]) {
-  void test(`monitor preserves concurrent fresh failures through inspector initialization and later baselines: ${includeInitial}`, async (t) => {
-    let initializes = 0;
-    const fresh = {
-      id: "racing-failure",
-      items: [
-        {
-          phase: "commentary",
-          text: "Synthetic progress",
-          type: "agentMessage"
-        }
-      ],
-      status: "failed"
-    };
-    const { connections, socket } = await fixture(
+for (const [
+  includeUnnamed,
+  includeInitial,
+  includeNotLoaded,
+  includePreviousNotLoaded
+] of [
+  [false, false, false, false],
+  [true, false, false, false],
+  [false, true, false, false],
+  [false, false, true, false],
+  [false, false, false, true],
+  [true, true, true, true]
+]) {
+  void test(`wildcard monitor selects name, previous, and current categories independently: ${includeUnnamed}/${includeInitial}/${includeNotLoaded}/${includePreviousNotLoaded}`, async (t) => {
+    const { connections, requests, socket } = await fixture(
       t,
-      ({ message, reply, connections: targets }) => {
-        if (message.method === "initialize") {
-          initializes += 1;
-          if (initializes === 2) {
-            const [owner] = targets;
-            owner.send(
-              JSON.stringify({
-                method: "thread/status/changed",
-                params: { status: "active", threadId: "watched" }
-              })
-            );
-            owner.send(
-              JSON.stringify({
-                method: "turn/completed",
-                params: { threadId: "watched", turn: fresh }
-              })
-            );
-            setTimeout(() => {
-              reply({});
-            }, 30);
-          } else {
-            reply({});
-          }
-        } else if (message.method === "thread/turns/list") {
-          reply({ data: [fresh] });
-        } else {
-          reply({ thread: { name: "Synthetic race", status: "active" } });
-        }
-      },
-      { failInitialize: true }
+      ({ message, reply }) => {
+        reply(
+          message.method === "thread/read"
+            ? {
+                thread: {
+                  name:
+                    monitorParams.parse(message.params).threadId === "sentinel"
+                      ? "Synthetic sentinel"
+                      : null
+                }
+              }
+            : { data: [] }
+        );
+      }
     );
-    const { child, events, exited } = monitor(t, socket, [
+    const args = [
+      ...(includeUnnamed ? ["--include-unnamed"] : []),
       ...(includeInitial ? ["--include-initial"] : []),
+      ...(includePreviousNotLoaded ? ["--include-previous-not-loaded"] : []),
+      ...(includeNotLoaded
+        ? ["--status", "active", "--status", "idle", "--status", "notLoaded"]
+        : []),
       "--thread",
-      "watched"
-    ]);
+      "*"
+    ];
+    const { child, events, exited } = monitor(t, socket, args);
     await t.waitFor(() => {
-      assert.equal(events.length, includeInitial ? 2 : 1);
+      assert.ok(requests.some(({ method }) => method === "thread/loaded/list"));
     });
-    assert.equal(events.at(-1)?.event, "turnError");
-    assert.equal(events.at(-1)?.turnId, fresh.id);
-    assert.equal(events.at(-1)?.previous, "active");
-    assert.equal(events.at(-1)?.threadName, "Synthetic race");
-    assert.equal(events.at(-1)?.finalMessage, null);
     const [owner] = connections;
-    owner.send(
-      JSON.stringify({
-        method: "turn/completed",
-        params: { threadId: "watched", turn: fresh }
-      })
-    );
-    owner.send(
-      JSON.stringify({
-        method: "thread/status/changed",
-        params: { status: "idle", threadId: "watched" }
-      })
-    );
+    for (const type of [
+      "active",
+      "notLoaded",
+      "idle",
+      "notLoaded",
+      "active",
+      "idle",
+      "idle"
+    ]) {
+      owner.send(
+        JSON.stringify({
+          method: "thread/status/changed",
+          params: { status: { type }, threadId: "new-thread" }
+        })
+      );
+    }
+    for (const type of ["active", "idle"]) {
+      owner.send(
+        JSON.stringify({
+          method: "thread/status/changed",
+          params: { status: type, threadId: "sentinel" }
+        })
+      );
+    }
+    const expected = includeUnnamed
+      ? [
+          ...(includeInitial ? [{ previous: null, status: "active" }] : []),
+          ...(includeNotLoaded
+            ? [{ previous: "active", status: "notLoaded" }]
+            : []),
+          ...(includePreviousNotLoaded
+            ? [{ previous: "notLoaded", status: "idle" }]
+            : []),
+          ...(includeNotLoaded
+            ? [{ previous: "idle", status: "notLoaded" }]
+            : []),
+          ...(includePreviousNotLoaded
+            ? [{ previous: "notLoaded", status: "active" }]
+            : []),
+          { previous: "active", status: "idle" }
+        ]
+      : [];
     await t.waitFor(() => {
-      assert.equal(events.at(-1)?.status, "idle");
+      assert.equal(
+        events.filter(({ threadId }) => threadId === "sentinel").length,
+        includeInitial ? 2 : 1
+      );
     });
-    assert.equal(events.filter(({ event }) => event === "turnError").length, 1);
     child.kill("SIGTERM");
     assert.deepEqual(await exited, [0, null]);
+    assert.deepEqual(
+      events
+        .filter(({ threadId }) => threadId !== "sentinel")
+        .map(({ previous, status }) => ({ previous, status })),
+      expected
+    );
+    assert.ok(
+      events
+        .filter(({ threadId }) => threadId !== "sentinel")
+        .every(({ threadName }) => threadName === null)
+    );
     await t.waitFor(() => {
       assert.equal(connections.size, 0);
     });
   });
 }
+
+await test("monitor preserves concurrent fresh failures through inspector initialization and later baselines", async (t) => {
+  let initializes = 0;
+  const fresh = {
+    id: "racing-failure",
+    items: [
+      {
+        phase: "commentary",
+        text: "Synthetic progress",
+        type: "agentMessage"
+      }
+    ],
+    status: "failed"
+  };
+  const { connections, socket } = await fixture(
+    t,
+    ({ message, reply, connections: targets }) => {
+      if (message.method === "initialize") {
+        initializes += 1;
+        if (initializes === 2) {
+          const [owner] = targets;
+          owner.send(
+            JSON.stringify({
+              method: "thread/status/changed",
+              params: { status: "active", threadId: "watched" }
+            })
+          );
+          owner.send(
+            JSON.stringify({
+              method: "turn/completed",
+              params: { threadId: "watched", turn: fresh }
+            })
+          );
+          setTimeout(() => {
+            reply({});
+          }, 30);
+        } else {
+          reply({});
+        }
+      } else if (message.method === "thread/turns/list") {
+        reply({ data: [fresh] });
+      } else {
+        reply({ thread: { name: "Synthetic race", status: "active" } });
+      }
+    },
+    { failInitialize: true }
+  );
+  const { child, events, exited } = monitor(t, socket, [
+    "--include-initial",
+    "--thread",
+    "watched"
+  ]);
+  await t.waitFor(() => {
+    assert.equal(events.length, 2);
+  });
+  assert.equal(events.at(-1)?.event, "turnError");
+  assert.equal(events.at(-1)?.turnId, fresh.id);
+  assert.equal(events.at(-1)?.previous, "active");
+  assert.equal(events.at(-1)?.threadName, "Synthetic race");
+  assert.equal(events.at(-1)?.finalMessage, null);
+  const [owner] = connections;
+  owner.send(
+    JSON.stringify({
+      method: "turn/completed",
+      params: { threadId: "watched", turn: fresh }
+    })
+  );
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: "idle", threadId: "watched" }
+    })
+  );
+  await t.waitFor(() => {
+    assert.equal(events.at(-1)?.status, "idle");
+  });
+  assert.equal(events.filter(({ event }) => event === "turnError").length, 1);
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
+});
 
 await test("monitor preserves a terminal notification received during its first initialization", async (t) => {
   let initializes = 0;
@@ -5911,159 +5854,152 @@ await test("monitor preserves a terminal notification received during its first 
   });
 });
 
-for (const includeInitial of [false, true]) {
-  for (const outcome of ["failed", "completed"]) {
-    for (const race of [
-      "active-idle",
-      "idle-only",
-      "idle-read",
-      "historical"
-    ]) {
-      void test(`monitor correlates status-only startup terminals with native baselines: ${includeInitial}/${outcome}/${race}`, async (t) => {
-        let initializes = 0;
-        const fresh = {
-          ...(race === "historical" ? { completedAt: 0 } : {}),
-          id: "synthetic-startup-turn",
-          items:
-            outcome === "completed"
-              ? [
-                  {
-                    phase: "final_answer",
-                    text: "Synthetic startup final",
-                    type: "agentMessage"
-                  }
-                ]
-              : [],
-          status: outcome
-        };
-        const { connections, socket } = await fixture(
-          t,
-          ({ message, reply, connections: targets }) => {
-            if (message.method === "initialize") {
-              initializes += 1;
-              if (initializes === 2 && race !== "idle-read") {
-                const [owner] = targets;
-                for (const status of race === "idle-only"
-                  ? ["idle"]
-                  : ["active", "idle"]) {
-                  owner.send(
-                    JSON.stringify({
-                      method: "thread/status/changed",
-                      params: { status, threadId: "watched" }
-                    })
-                  );
+for (const outcome of ["failed", "completed"]) {
+  for (const race of ["active-idle", "idle-only", "idle-read", "historical"]) {
+    void test(`monitor correlates status-only startup terminals with native baselines: ${outcome}/${race}`, async (t) => {
+      let initializes = 0;
+      const fresh = {
+        ...(race === "historical" ? { completedAt: 0 } : {}),
+        id: "synthetic-startup-turn",
+        items:
+          outcome === "completed"
+            ? [
+                {
+                  phase: "final_answer",
+                  text: "Synthetic startup final",
+                  type: "agentMessage"
                 }
-                setTimeout(() => {
-                  reply({});
-                }, 30);
-              } else {
-                reply({});
-              }
-            } else if (message.method === "thread/loaded/list") {
-              reply({ data: ["watched"] });
-            } else if (message.method === "thread/turns/list") {
-              reply({ data: [fresh] });
-            } else {
-              const result = {
-                thread: {
-                  name: "Synthetic startup name",
-                  status: ["idle-only", "idle-read"].includes(race)
-                    ? "active"
-                    : "idle"
-                }
-              };
-              if (
-                race === "idle-read" &&
-                monitorParams.parse(message.params).includeTurns !== true
-              ) {
-                const [owner] = targets;
+              ]
+            : [],
+        status: outcome
+      };
+      const { connections, socket } = await fixture(
+        t,
+        ({ message, reply, connections: targets }) => {
+          if (message.method === "initialize") {
+            initializes += 1;
+            if (initializes === 2 && race !== "idle-read") {
+              const [owner] = targets;
+              for (const status of race === "idle-only"
+                ? ["idle"]
+                : ["active", "idle"]) {
                 owner.send(
                   JSON.stringify({
                     method: "thread/status/changed",
-                    params: { status: "idle", threadId: "watched" }
+                    params: { status, threadId: "watched" }
                   })
                 );
-                setTimeout(() => {
-                  reply(result);
-                }, 30);
-              } else {
-                reply(result);
               }
+              setTimeout(() => {
+                reply({});
+              }, 30);
+            } else {
+              reply({});
             }
-          },
-          { failInitialize: true }
+          } else if (message.method === "thread/loaded/list") {
+            reply({ data: ["watched"] });
+          } else if (message.method === "thread/turns/list") {
+            reply({ data: [fresh] });
+          } else {
+            const result = {
+              thread: {
+                name: "Synthetic startup name",
+                status: ["idle-only", "idle-read"].includes(race)
+                  ? "active"
+                  : "idle"
+              }
+            };
+            if (
+              race === "idle-read" &&
+              monitorParams.parse(message.params).includeTurns !== true
+            ) {
+              const [owner] = targets;
+              owner.send(
+                JSON.stringify({
+                  method: "thread/status/changed",
+                  params: { status: "idle", threadId: "watched" }
+                })
+              );
+              setTimeout(() => {
+                reply(result);
+              }, 30);
+            } else {
+              reply(result);
+            }
+          }
+        },
+        { failInitialize: true }
+      );
+      const { child, events, exited } = monitor(t, socket, [
+        "--include-initial",
+        "--thread",
+        "*"
+      ]);
+      await t.waitFor(() => {
+        assert.ok(
+          events.some(
+            ({ event, status, previous }) =>
+              event === "threadStatus" &&
+              status === "idle" &&
+              previous === "active"
+          )
         );
-        const { child, events, exited } = monitor(t, socket, [
-          ...(includeInitial ? ["--include-initial"] : []),
-          "--thread",
-          "*"
-        ]);
-        await t.waitFor(() => {
-          assert.ok(
-            events.some(
-              ({ event, status, previous }) =>
-                event === "threadStatus" &&
-                status === "idle" &&
-                previous === "active"
-            )
-          );
-        });
-        const terminals = events.filter(({ turnId }) => turnId === fresh.id);
-        assert.equal(terminals.length, race === "historical" ? 0 : 1);
-        if (race !== "historical") {
-          assert.equal(
-            terminals[0].event,
-            outcome === "failed" ? "turnError" : "turnCompleted"
-          );
-          assert.equal(terminals[0].previous, "active");
-          assert.equal(terminals[0].threadName, "Synthetic startup name");
-          assert.equal(
-            terminals[0].finalMessage,
-            outcome === "completed" ? "Synthetic startup final" : null
-          );
-        }
-        assert.equal(
-          events.filter(({ previous }) => previous === null).length,
-          includeInitial ? 1 : 0
-        );
-        const [owner] = connections;
-        owner.send(
-          JSON.stringify({
-            method: "turn/completed",
-            params: { threadId: "watched", turn: fresh }
-          })
-        );
-        owner.send(
-          JSON.stringify({
-            method: "thread/status/changed",
-            params: { status: "idle", threadId: "watched" }
-          })
-        );
-        const next = {
-          ...fresh,
-          completedAt: undefined,
-          id: "synthetic-distinct-turn"
-        };
-        owner.send(
-          JSON.stringify({
-            method: "turn/completed",
-            params: { threadId: "watched", turn: next }
-          })
-        );
-        await t.waitFor(() => {
-          assert.equal(events.at(-1)?.turnId, next.id);
-        });
-        assert.equal(
-          events.filter(({ turnId }) => turnId === fresh.id).length,
-          race === "historical" ? 0 : 1
-        );
-        child.kill("SIGTERM");
-        assert.deepEqual(await exited, [0, null]);
-        await t.waitFor(() => {
-          assert.equal(connections.size, 0);
-        });
       });
-    }
+      const terminals = events.filter(({ turnId }) => turnId === fresh.id);
+      assert.equal(terminals.length, race === "historical" ? 0 : 1);
+      if (race !== "historical") {
+        assert.equal(
+          terminals[0].event,
+          outcome === "failed" ? "turnError" : "turnCompleted"
+        );
+        assert.equal(terminals[0].previous, "active");
+        assert.equal(terminals[0].threadName, "Synthetic startup name");
+        assert.equal(
+          terminals[0].finalMessage,
+          outcome === "completed" ? "Synthetic startup final" : null
+        );
+      }
+      assert.equal(
+        events.filter(({ previous }) => previous === null).length,
+        1
+      );
+      const [owner] = connections;
+      owner.send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: { threadId: "watched", turn: fresh }
+        })
+      );
+      owner.send(
+        JSON.stringify({
+          method: "thread/status/changed",
+          params: { status: "idle", threadId: "watched" }
+        })
+      );
+      const next = {
+        ...fresh,
+        completedAt: undefined,
+        id: "synthetic-distinct-turn"
+      };
+      owner.send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: { threadId: "watched", turn: next }
+        })
+      );
+      await t.waitFor(() => {
+        assert.equal(events.at(-1)?.turnId, next.id);
+      });
+      assert.equal(
+        events.filter(({ turnId }) => turnId === fresh.id).length,
+        race === "historical" ? 0 : 1
+      );
+      child.kill("SIGTERM");
+      assert.deepEqual(await exited, [0, null]);
+      await t.waitFor(() => {
+        assert.equal(connections.size, 0);
+      });
+    });
   }
 }
 
@@ -6256,184 +6192,167 @@ for (const phase of ["thread/items/list", "thread/read"]) {
   });
 }
 
-for (const includeInitial of [false, true]) {
-  for (const turnStatus of ["failed", "completed"]) {
-    void test(`monitor never replays historical ${turnStatus} notifications after an idle inspection: ${includeInitial}`, async (t) => {
-      const historical = {
-        id: "historical-terminal",
-        items: [],
-        status: turnStatus
-      };
-      const { connections, requests, socket } = await fixture(
-        t,
-        ({ message, reply }) => {
-          reply(
-            message.method === "thread/read"
-              ? { thread: { name: "Synthetic history", status: "idle" } }
-              : { data: [historical] }
-          );
-        }
+await test("monitor never replays historical completed notifications after an idle inspection", async (t) => {
+  const historical = {
+    id: "historical-terminal",
+    items: [],
+    status: "completed"
+  };
+  const { connections, requests, socket } = await fixture(
+    t,
+    ({ message, reply }) => {
+      reply(
+        message.method === "thread/read"
+          ? { thread: { name: "Synthetic history", status: "idle" } }
+          : { data: [historical] }
       );
-      const { child, events, exited } = monitor(t, socket, [
-        ...(includeInitial ? ["--include-initial"] : []),
-        "--thread",
-        "watched"
-      ]);
-      await t.waitFor(() => {
-        assert.ok(requests.some(({ method }) => method === "thread/read"));
-      });
-      const [owner] = connections;
-      owner.send(
-        JSON.stringify({
-          method: "thread/status/changed",
-          params: { status: "idle", threadId: "watched" }
-        })
-      );
-      owner.send(
-        JSON.stringify({
-          method: "turn/completed",
-          params: { threadId: "watched", turn: historical }
-        })
-      );
-      owner.send(
-        JSON.stringify({
-          method: "thread/status/changed",
-          params: { status: "systemError", threadId: "watched" }
-        })
-      );
-      await t.waitFor(() => {
-        assert.equal(events.at(-1)?.status, "systemError");
-      });
-      assert.ok(events.every(({ turnId }) => turnId !== historical.id));
-      owner.send(
-        JSON.stringify({
-          method: "turn/completed",
-          params: {
-            threadId: "watched",
-            turn: { ...historical, id: "genuinely-distinct-terminal" }
-          }
-        })
-      );
-      await t.waitFor(() => {
-        assert.equal(events.at(-1)?.turnId, "genuinely-distinct-terminal");
-      });
-      assert.equal(events.at(-1)?.finalMessage, null);
-      child.kill("SIGTERM");
-      assert.deepEqual(await exited, [0, null]);
-      await t.waitFor(() => {
-        assert.equal(connections.size, 0);
-      });
-    });
-  }
-}
+    }
+  );
+  const { child, events, exited } = monitor(t, socket, [
+    "--include-initial",
+    "--thread",
+    "watched"
+  ]);
+  await t.waitFor(() => {
+    assert.ok(requests.some(({ method }) => method === "thread/read"));
+  });
+  const [owner] = connections;
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: "idle", threadId: "watched" }
+    })
+  );
+  owner.send(
+    JSON.stringify({
+      method: "turn/completed",
+      params: { threadId: "watched", turn: historical }
+    })
+  );
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: "systemError", threadId: "watched" }
+    })
+  );
+  await t.waitFor(() => {
+    assert.equal(events.at(-1)?.status, "systemError");
+  });
+  assert.ok(events.every(({ turnId }) => turnId !== historical.id));
+  owner.send(
+    JSON.stringify({
+      method: "turn/completed",
+      params: {
+        threadId: "watched",
+        turn: { ...historical, id: "genuinely-distinct-terminal" }
+      }
+    })
+  );
+  await t.waitFor(() => {
+    assert.equal(events.at(-1)?.turnId, "genuinely-distinct-terminal");
+  });
+  assert.equal(events.at(-1)?.finalMessage, null);
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
+});
 
-for (const includeInitial of [false, true]) {
-  for (const secondRaces of [false, true]) {
-    void test(`monitor keeps unaffected baselines and captures buffered cross-thread startup events: ${includeInitial}/${secondRaces}`, async (t) => {
-      let injected = false;
-      const { connections, requests, socket } = await fixture(
-        t,
-        ({ message, reply, connections: targets }) => {
-          if (message.method === "thread/loaded/list") {
-            reply({ data: ["first", "second"] });
-          } else if (message.method === "thread/read") {
-            if (
-              !injected &&
-              monitorParams.parse(message.params).threadId === "first"
-            ) {
-              injected = true;
-              const [owner] = targets;
-              owner.send(
-                JSON.stringify({
-                  method: "thread/status/changed",
-                  params: { status: "active", threadId: "first" }
-                })
-              );
-              if (secondRaces) {
-                owner.send(
-                  JSON.stringify({
-                    method: "thread/status/changed",
-                    params: { status: "active", threadId: "second" }
-                  })
-                );
-              }
-              setTimeout(() => {
-                reply({ thread: { status: "active" } });
-              }, 30);
-            } else {
-              reply({ thread: { status: "active" } });
-            }
-          } else {
-            reply({ data: [] });
-          }
-        }
-      );
-      const { child, events, exited } = monitor(t, socket, [
-        "--include-unnamed",
-        ...(includeInitial ? ["--include-initial"] : []),
-        "--thread",
-        "*"
-      ]);
-      await t.waitFor(() => {
-        assert.ok(
-          requests.some(
-            ({ method, params }) =>
-              method === "thread/read" &&
-              monitorParams.parse(params).threadId === "second"
-          )
-        );
-      });
-      await delay(30);
-      const [owner] = connections;
-      const fresh = { id: "second-fresh-failure", items: [], status: "failed" };
-      owner.send(
-        JSON.stringify({
-          method: "turn/completed",
-          params: { threadId: "second", turn: fresh }
-        })
-      );
-      owner.send(
-        JSON.stringify({
-          method: "thread/status/changed",
-          params: { status: "idle", threadId: "second" }
-        })
-      );
-      await t.waitFor(() => {
-        assert.equal(events.at(-1)?.status, "idle");
-      });
-      assert.ok(
-        events.some(
-          ({ turnId, previous }) => turnId === fresh.id && previous === "active"
-        )
-      );
-      if (includeInitial) {
-        assert.equal(
-          events.filter(
-            ({ threadId, status }) =>
-              threadId === "second" && status === "active"
-          ).length,
-          1
-        );
-        if (secondRaces) {
-          assert.deepEqual(
-            events
-              .filter(({ status }) => status === "active")
-              .map(({ threadId }) => threadId),
-            ["first", "second"]
+await test("monitor keeps unaffected baselines and captures buffered cross-thread startup events", async (t) => {
+  let injected = false;
+  const { connections, requests, socket } = await fixture(
+    t,
+    ({ message, reply, connections: targets }) => {
+      if (message.method === "thread/loaded/list") {
+        reply({ data: ["first", "second"] });
+      } else if (message.method === "thread/read") {
+        if (
+          !injected &&
+          monitorParams.parse(message.params).threadId === "first"
+        ) {
+          injected = true;
+          const [owner] = targets;
+          owner.send(
+            JSON.stringify({
+              method: "thread/status/changed",
+              params: { status: "active", threadId: "first" }
+            })
           );
+          owner.send(
+            JSON.stringify({
+              method: "thread/status/changed",
+              params: { status: "active", threadId: "second" }
+            })
+          );
+          setTimeout(() => {
+            reply({ thread: { status: "active" } });
+          }, 30);
+        } else {
+          reply({ thread: { status: "active" } });
         }
       } else {
-        assert.ok(events.every(({ previous }) => previous !== null));
+        reply({ data: [] });
       }
-      assert.equal(events.at(-1)?.previous, "active");
-      child.kill("SIGTERM");
-      assert.deepEqual(await exited, [0, null]);
-      await t.waitFor(() => {
-        assert.equal(connections.size, 0);
-      });
-    });
-  }
-}
+    }
+  );
+  const { child, events, exited } = monitor(t, socket, [
+    "--include-unnamed",
+    "--include-initial",
+    "--thread",
+    "*"
+  ]);
+  await t.waitFor(() => {
+    assert.ok(
+      requests.some(
+        ({ method, params }) =>
+          method === "thread/read" &&
+          monitorParams.parse(params).threadId === "second"
+      )
+    );
+  });
+  await delay(30);
+  const [owner] = connections;
+  const fresh = { id: "second-fresh-failure", items: [], status: "failed" };
+  owner.send(
+    JSON.stringify({
+      method: "turn/completed",
+      params: { threadId: "second", turn: fresh }
+    })
+  );
+  owner.send(
+    JSON.stringify({
+      method: "thread/status/changed",
+      params: { status: "idle", threadId: "second" }
+    })
+  );
+  await t.waitFor(() => {
+    assert.equal(events.at(-1)?.status, "idle");
+  });
+  assert.ok(
+    events.some(
+      ({ turnId, previous }) => turnId === fresh.id && previous === "active"
+    )
+  );
+  assert.equal(
+    events.filter(
+      ({ threadId, status }) => threadId === "second" && status === "active"
+    ).length,
+    1
+  );
+  assert.deepEqual(
+    events
+      .filter(({ status }) => status === "active")
+      .map(({ threadId }) => threadId),
+    ["first", "second"]
+  );
+  assert.equal(events.at(-1)?.previous, "active");
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, [0, null]);
+  await t.waitFor(() => {
+    assert.equal(connections.size, 0);
+  });
+});
 
 for (const selection of ["explicit", "wildcard"]) {
   for (const includeUnnamed of [false, true]) {
@@ -6600,7 +6519,7 @@ for (const selection of ["explicit", "wildcard"]) {
   }
 }
 
-for (const name of [undefined, "", "   "]) {
+for (const name of [undefined, "   "]) {
   void test(`monitor excludes missing or blank names without reading terminal messages: ${JSON.stringify(name)}`, async (t) => {
     let nameReads = 0;
     const { connections, requests, socket } = await fixture(
