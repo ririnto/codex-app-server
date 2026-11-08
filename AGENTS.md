@@ -41,10 +41,12 @@ Prefer an existing parser or literal operation when it expresses the requirement
 
 ## Preserve production behavior
 
+Change production code only for real product requirements or actual defects.
 Inline single-use variables and logic when lint permits and behavior remains unchanged.
 Preserve evaluation order, side effects, cost, inferred types, overload selection, lazy execution, and callback contracts.
 Preserve exceptions, captured snapshots, resource lifetimes, cancellation, and cleanup semantics.
 Do not create hypothetical production helpers, expose internals, or add test seams for test convenience.
+Adapt tests to actual production interfaces and behavior.
 Test references do not establish production reuse.
 
 ## Maintain configuration and hooks
