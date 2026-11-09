@@ -566,6 +566,67 @@ await test("buffers early completion, matches the turn, and returns structured f
   assert.deepEqual(failed.error, diagnostic);
 });
 
+await test("generated completion interleavings return only the requested turn", async (t) => {
+  let current = 0;
+  const { client } = await fixture(t, ({ message, reply, ws }) => {
+    if (message.method === "turn/start") {
+      const id = `generated-turn-${current}`;
+      const notes = [
+        {
+          method: "turn/completed",
+          params: { turn: { id: `other-${current}`, status: "failed" } }
+        },
+        {
+          method: "item/completed",
+          params: {
+            item: { text: `answer-${current}`, type: "agentMessage" },
+            turnId: id
+          }
+        },
+        {
+          method: "item/completed",
+          params: {
+            item: { text: `other-${current}`, type: "agentMessage" },
+            turnId: `other-${current}`
+          }
+        },
+        {
+          method: "turn/completed",
+          params: { turn: { id, status: "completed" } }
+        }
+      ];
+      for (const [index, note] of notes.entries()) {
+        if (index === current) {
+          reply({ turn: { id } });
+        }
+        ws.send(JSON.stringify(note));
+      }
+      if (current === notes.length) {
+        reply({ turn: { id } });
+      }
+    } else {
+      reply(message.method === "thread/read" ? { thread: { turns: [] } } : {});
+    }
+  });
+  const checkInterleaving = async () => {
+    const result = await call(client, "codex_send", {
+      text: `request-${current}`,
+      thread_id: `generated-thread-${current}`,
+      wait_seconds: 2
+    });
+    assert.deepEqual(result.value, {
+      finalMessage: `answer-${current}`,
+      status: "completed",
+      turnId: `generated-turn-${current}`
+    });
+    current += 1;
+    if (current <= 4) {
+      await checkInterleaving();
+    }
+  };
+  await checkInterleaving();
+});
+
 await test("reports wait timeout and socket closure during a turn", async (t) => {
   let drop = false;
   const { client } = await fixture(t, ({ message, reply, ws }) => {
@@ -1297,6 +1358,117 @@ await test("queues active sends and delivers fresh turns in order, buffering ear
     queueResult.parse(receipt.value).messages.map((record) => record.turnId),
     ["fresh-1", "fresh-2"]
   );
+});
+
+await test("generated queue batches deliver acknowledged messages once in insertion order", async (t) => {
+  let threadId = "";
+  let turns = [{ id: "active", status: "inProgress" }];
+  /** @type {string[]} */
+  let delivered = [];
+  let delayedCompletion = false;
+  const { client, connections } = await fixture(t, ({ message, reply, ws }) => {
+    if (message.method === "thread/read") {
+      reply({ thread: { turns } });
+    } else if (message.method === "turn/start") {
+      assert.notEqual(turns.at(-1)?.status, "inProgress");
+      delivered.push(turnInput.parse(message.params).input[0].text);
+      const turn = {
+        id: `fresh-${delivered.length}`,
+        status: delayedCompletion ? "inProgress" : "completed"
+      };
+      turns.push(turn);
+      if (!delayedCompletion) {
+        ws.send(
+          JSON.stringify({
+            method: "turn/completed",
+            params: { threadId, turn }
+          })
+        );
+      }
+      reply({ turn });
+    } else {
+      reply({});
+    }
+  });
+  const cases = [1, 2, 3, 5, 8].flatMap((size) =>
+    [false, true].map((delayed) => ({ delayed, size }))
+  );
+  /** @param {number} batch - Generated batch index. */
+  const checkBatch = async (batch) => {
+    const { delayed, size } = cases[batch];
+    delayedCompletion = delayed;
+    threadId = `generated-queue-${size}-${delayed}`;
+    turns = [{ id: "active", status: "inProgress" }];
+    delivered = [];
+    const messages = Array.from(
+      { length: size },
+      (_, index) => `message-${size}-${index}`
+    );
+    /** @param {number} index - Message index. */
+    const enqueue = async (index) => {
+      const result = await call(client, "codex_send", {
+        text: messages[index],
+        thread_id: threadId
+      });
+      assert.equal(queueReceipt.parse(result.value).status, "queued");
+      if (index + 1 < messages.length) {
+        await enqueue(index + 1);
+      }
+    };
+    await enqueue(0);
+    assert.deepEqual(delivered, []);
+    turns[0].status = "completed";
+    for (const ws of connections) {
+      ws.send(
+        JSON.stringify({
+          method: "turn/completed",
+          params: { threadId, turn: turns[0] }
+        })
+      );
+    }
+    if (delayedCompletion) {
+      /** @param {number} index - Started message index. */
+      const complete = async (index) => {
+        await t.waitFor(
+          () => {
+            assert.equal(delivered.length, index + 1);
+          },
+          { timeout: 2000 }
+        );
+        const turn = turns.at(-1);
+        assert.ok(turn);
+        turn.status = "completed";
+        for (const ws of connections) {
+          ws.send(
+            JSON.stringify({
+              method: "turn/completed",
+              params: { threadId, turn }
+            })
+          );
+        }
+        if (index + 1 < messages.length) {
+          await complete(index + 1);
+        }
+      };
+      await complete(0);
+    }
+    await t.waitFor(
+      () => {
+        assert.equal(connections.size, 0);
+      },
+      { timeout: 2000 }
+    );
+    assert.deepEqual(delivered, messages);
+    const receipt = await call(client, "codex_queue", { thread_id: threadId });
+    assert.deepEqual(
+      queueResult.parse(receipt.value).messages.map(({ status }) => status),
+      messages.map(() => "completed")
+    );
+    if (batch + 1 < cases.length) {
+      await checkBatch(batch + 1);
+    }
+  };
+  await checkBatch(0);
 });
 
 await test("default steering queues and a known response.interrupt failure avoids explicit steering", async (t) => {
