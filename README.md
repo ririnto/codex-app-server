@@ -178,6 +178,54 @@ The native fresh-turn request has no idle-only precondition, so external writers
 On an active-writer error, let the existing writer release the thread instead of deleting its lock.
 Read the thread first and use these tools only under authorized instructions.
 
+### Delivery And Completion States
+
+A queued message follows these states while the plugin owns its delivery connection.
+The plugin rechecks the thread before starting the next message.
+A failed or unconfirmed start stops the batch without a retry.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Queued: Message accepted
+    Queued --> Queued: Thread still active
+    Queued --> Delivering: Thread observed idle
+    Queued --> Refused: Cancel, deadline, or connection failure
+    Delivering --> Started: Start acknowledged
+    Delivering --> Refused: Start fails or is unconfirmed
+    Started --> Completed: Turn completes
+    Started --> Failed: Turn fails
+    Started --> Interrupted: Turn is interrupted
+    Completed --> [*]
+    Failed --> [*]
+    Interrupted --> [*]
+    Refused --> [*]
+```
+
+The generated queue property checks that each message in a successful batch starts once and in insertion order after the thread becomes idle.
+It exercises the real MCP server with a disposable socket.
+
+A caller who requests a completion wait follows this separate lifecycle.
+The plugin subscribes before sending the start request, so completion can arrive before the acknowledgment.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Starting: Subscribe and request start
+    Starting --> Waiting: Start acknowledged
+    Starting --> Starting: Buffer notifications
+    Starting --> Failed: Start request fails
+    Waiting --> Waiting: Unrelated notification
+    Waiting --> Finished: Matching turn completes
+    Waiting --> TimedOut: Deadline expires
+    Waiting --> ConnectionClosed: Socket closes
+    Finished --> [*]
+    TimedOut --> [*]
+    ConnectionClosed --> [*]
+    Failed --> [*]
+```
+
+The generated completion property varies the acknowledgment position among notifications.
+It checks that another turn cannot complete the caller's wait and that the matching answer survives early delivery.
+
 ## Installed-Version Catalog
 
 At startup, the server runs `codex --version` and `codex app-server generate-json-schema` into a disposable directory.
