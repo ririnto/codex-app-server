@@ -183,6 +183,7 @@ Read the thread first and use these tools only under authorized instructions.
 A queued message follows these states while the plugin owns its delivery connection.
 The plugin rechecks the thread before starting the next message.
 A failed or unconfirmed start stops the batch without a retry.
+A closed queue keeps any started receipt without observing its later outcome.
 
 ```mermaid
 stateDiagram-v2
@@ -192,9 +193,10 @@ stateDiagram-v2
     Queued --> Refused: Cancel, deadline, or connection failure
     Delivering --> Started: Start acknowledged
     Delivering --> Refused: Start fails or is unconfirmed
-    Started --> Completed: Turn completes
-    Started --> Failed: Turn fails
-    Started --> Interrupted: Turn is interrupted
+    Started --> Completed: Open queue reads completed turn
+    Started --> Failed: Open queue reads failed turn
+    Started --> Interrupted: Open queue reads interrupted turn
+    Started --> Started: Queue closes before terminal observation
     Completed --> [*]
     Failed --> [*]
     Interrupted --> [*]
