@@ -31,4 +31,4 @@ jobs:
           node-version-file: package.json
       - uses: pnpm/action-setup@v6
       - run: pnpm install --frozen-lockfile --prod
-      - run: pnpm run check:runtime
+      - run: node --test tests/server.test.mjs
