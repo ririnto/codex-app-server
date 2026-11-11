@@ -5,11 +5,14 @@ Use [README.md](README.md#development) for setup and validation commands.
 
 ## Issues
 
+Issues are optional and are not prerequisites for implementation, pull requests, or integration.
+Record the problem, scope, and acceptance criteria in the task or pull request when no issue is used.
+
 Describe the problem, evidence, scope, acceptance criteria, owner, and next action before proposing changes.
 Use the [bug report form](.github/ISSUE_TEMPLATE/bug_report.yaml) for defects and the [improvement form](.github/ISSUE_TEMPLATE/improvement.yaml) for requirements.
 Complete those sections when creating issues through an API or CLI.
 Check overlapping work and keep one writer per shared resource.
-Keep new requirements in separate linked issues.
+Track new requirements separately in the task, pull request, or an issue when useful.
 Follow [SECURITY.md](SECURITY.md) for suspected vulnerabilities.
 
 ## Verification
@@ -24,14 +27,14 @@ Source and fixture checks do not establish live host acceptance.
 
 ## Commits And Pull Requests
 
-Create an issue before a new worktree or implementation branch.
+Define the task scope before a new worktree or implementation branch.
 Keep primary checkouts on `main` and perform changes in a separate worktree.
 Use repository-relative paths and portable examples.
 Keep credentials, private environment details, and external work-item identifiers out of committed content.
 Write a descriptive commit title, a blank line, and a body explaining the reason, changes, verification, and limitations.
 Put each complete body sentence on its own line and separate paragraphs with blank lines.
 Use the [pull request template](.github/pull_request_template.md) for the posted change.
-Link the issue and use a closing reference only when the acceptance criteria are satisfied.
+Link an issue when one exists and use a closing reference only when its acceptance criteria are satisfied.
 Inspect the diff and passing evidence before publication and integration.
 Obtain independent review of the complete posted change and resolve acceptance blockers before merge.
 Preserve unrelated work and report precise acceptance blockers.
