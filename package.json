@@ -18,7 +18,8 @@
   "type": "module",
   "scripts": {
     "check": "run-p check:*",
-    "check:test": "node --test \"**/*.test.mjs\"",
+    "check:test": "run-p check:test:*",
+    "check:test:tooling": "node --test \"**/*.test.mjs\"",
     "check:issue-forms": "node release/check-issue-forms.mjs",
     "check:plugin-version": "node release/check-plugin-version.mjs",
     "check:markdownlint-cli2": "markdownlint-cli2",
