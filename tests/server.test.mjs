@@ -6696,7 +6696,11 @@ for (const selection of ["explicit", "wildcard"]) {
         complete("unnamed", "after-rename", "completed");
         notify("unnamed", "thread/status/changed", { status: "idle" });
         await t.waitFor(() => {
-          assert.equal(events.length, retained + 3);
+          assert.equal(
+            events.length,
+            retained + 3,
+            JSON.stringify(events.slice(retained))
+          );
         });
         assert.deepEqual(
           events.slice(retained).map(({ event }) => event),
