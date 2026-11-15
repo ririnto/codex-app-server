@@ -6572,6 +6572,9 @@ for (const selection of ["explicit", "wildcard"]) {
       test(`monitor preserves named events and selects unnamed threads explicitly: ${selection}/${includeUnnamed}`, async (t) => {
         /** @type {string | null} */
         let unnamedName = null;
+        let holdUnnamedRead = false;
+        /** @type {(() => void) | undefined} */
+        let releaseUnnamedRead;
         const { connections, requests, socket } = await fixture(
           t,
           ({ message, reply }) => {
@@ -6582,15 +6585,26 @@ for (const selection of ["explicit", "wildcard"]) {
                   : { data: ["unnamed"], nextCursor: null }
               );
             } else if (message.method === "thread/read") {
-              reply({
-                thread: {
-                  name:
-                    monitorParams.parse(message.params).threadId === "named"
-                      ? "Synthetic Main"
-                      : unnamedName,
-                  status: "active"
-                }
-              });
+              const respond = () => {
+                reply({
+                  thread: {
+                    name:
+                      monitorParams.parse(message.params).threadId === "named"
+                        ? "Synthetic Main"
+                        : unnamedName,
+                    status: "active"
+                  }
+                });
+              };
+              if (
+                holdUnnamedRead &&
+                monitorParams.parse(message.params).threadId === "unnamed"
+              ) {
+                holdUnnamedRead = false;
+                releaseUnnamedRead = respond;
+              } else {
+                respond();
+              }
             } else {
               reply({
                 data: [{ completedAt: 0, id: "old-failure", status: "failed" }]
@@ -6612,6 +6626,7 @@ for (const selection of ["explicit", "wildcard"]) {
         });
         await delay(30);
         assert.equal(events.length, 0);
+        holdUnnamedRead = !includeUnnamed;
         const [owner] = connections;
         /** @param {string} threadId - Thread ID.
          * @param {string} method - Notification method.
@@ -6688,6 +6703,21 @@ for (const selection of ["explicit", "wildcard"]) {
             );
           }
         }
+        if (!includeUnnamed) {
+          await t.waitFor(() => {
+            assert.equal(typeof releaseUnnamedRead, "function");
+          });
+          releaseUnnamedRead?.();
+        }
+        notify("named", "thread/status/changed", { status: "idle" });
+        await t.waitFor(() => {
+          assert.equal(events.at(-1)?.threadId, "named");
+          assert.equal(events.at(-1)?.status, "idle");
+        });
+        assert.equal(
+          events.filter(({ threadId }) => threadId === "unnamed").length,
+          includeUnnamed ? 4 : 0
+        );
         const retained = events.length;
         unnamedName = "Synthetic renamed Main";
         complete("unnamed", "failure", "failed");
