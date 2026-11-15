@@ -18,7 +18,8 @@ import { registerTurnTools } from "./lib/turn-tools.mjs";
 
 /**
  * Expose the running Codex app-server as a stdio MCP server.
- * Immediate calls close their own connection; authorized queued messages retain a bounded delivery connection.
+ * Immediate calls close their own connection.
+ * Authorized queued messages retain a bounded delivery connection.
  * It starts no daemon and retains no persistent message queue.
  * Archive, unarchive, and delete threads with the native `codex archive|unarchive|delete --remote unix://` commands.
  */
