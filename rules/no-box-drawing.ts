@@ -1,7 +1,5 @@
 import type { Rule } from "markdownlint";
 
-const boxDrawingPattern = /(?<boxDrawing>[\u{2500}-\u{257F}])/u;
-
 /**
  * Markdownlint rule detecting and reporting Unicode box drawing characters
  * (U+2500 to U+257F) as violations.
@@ -10,7 +8,7 @@ export default {
   description: "Unicode box drawing characters are not allowed in Markdown",
   function: (params, onError) => {
     for (const [index, line] of params.lines.entries()) {
-      const match = boxDrawingPattern.exec(line);
+      const match = /(?<boxDrawing>[\u{2500}-\u{257F}])/u.exec(line);
       if (match?.groups?.boxDrawing !== undefined) {
         onError({
           context: line.trim(),

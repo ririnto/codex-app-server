@@ -5,8 +5,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 
 const manifest = z.looseObject({ version: z.unknown() });
-const versionPattern =
-  /^(?<year>\d{4})\.(?<month>\d{2})\.(?<day>\d{2})\.(?<sequence>\d{2})$/u;
 
 /**
  * Validate matching host plugin versions in yyyy.mm.dd.seq format.
@@ -21,7 +19,11 @@ export const validatePluginVersions = (claudeVersion, codexVersion) => {
   ];
   for (const [host, version] of versions) {
     const match =
-      typeof version === "string" ? versionPattern.exec(version) : null;
+      typeof version === "string"
+        ? /^(?<year>\d{4})\.(?<month>\d{2})\.(?<day>\d{2})\.(?<sequence>\d{2})$/u.exec(
+            version
+          )
+        : null;
     if (!match?.groups) {
       throw new Error(`${host} plugin version must use yyyy.mm.dd.seq format.`);
     }
