@@ -22,6 +22,7 @@ import { execa } from "execa";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 
+import { openClient } from "../lib/connection.mjs";
 import { watchThreads } from "../lib/monitor.mjs";
 import { createNativeSessions } from "../lib/native-session.mjs";
 import { closeQueues, enqueueMessage } from "../lib/queue.mjs";
@@ -1290,6 +1291,39 @@ await test("serves only curated tools when the schema catalog is unavailable", a
   });
   const { tools } = await client.listTools();
   assert.equal(tools.length, 14);
+});
+
+await test("notification handler failures close the connection and reject pending requests", async (t) => {
+  const { connections, socket } = await fixture(t, ({ message, reply }) => {
+    if (message.method !== "thread/read") {
+      reply({});
+    }
+  });
+  const previousSocket = process.env.CODEX_APP_SERVER_SOCKET;
+  process.env.CODEX_APP_SERVER_SOCKET = socket;
+  t.after(() => {
+    if (previousSocket === undefined) {
+      delete process.env.CODEX_APP_SERVER_SOCKET;
+    } else {
+      process.env.CODEX_APP_SERVER_SOCKET = previousSocket;
+    }
+  });
+  const client = await openClient({
+    onNotification: () => {
+      throw new Error("notification failed");
+    }
+  });
+  const pending = client.request("thread/read", {});
+  const [ws] = connections;
+  assert.notEqual(ws, undefined);
+  ws.send(JSON.stringify({ method: "thread/status/changed", params: {} }));
+  await assert.rejects(pending, /notification failed/u);
+  await t.waitFor(
+    () => {
+      assert.equal(connections.size, 0);
+    },
+    { timeout: 2000 }
+  );
 });
 
 await test("queues active sends and delivers fresh turns in order, buffering early completion", async (t) => {

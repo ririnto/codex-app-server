@@ -126,11 +126,24 @@ const close = () => {
   closeQueues();
   native.close();
 };
+/** @type {PromiseWithResolvers<void>} */
+const stopped = Promise.withResolvers();
 const stop = () => {
-  void server.close();
+  stopped.resolve();
 };
 process.stdin.once("end", stop);
 process.stdin.once("close", stop);
 process.stdin.once("error", stop);
 process.stdout.once("error", stop);
-await server.connect(new SessionTransport(close));
+try {
+  await Promise.all([
+    server.connect(new SessionTransport(close)),
+    stopped.promise
+  ]);
+} finally {
+  process.stdin.removeListener("end", stop);
+  process.stdin.removeListener("close", stop);
+  process.stdin.removeListener("error", stop);
+  process.stdout.removeListener("error", stop);
+  await server.close();
+}
