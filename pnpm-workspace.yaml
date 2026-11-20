@@ -8,8 +8,8 @@ catalog:
   markdownlint-cli2: ^0.24.1
   markdownlint-rule-relative-links: ^5.1.4
   npm-run-all2: ^9.0.4
-  oxfmt: ^0.78.0
-  oxlint: ^1.93.0
+  oxfmt: ^0.79.0
+  oxlint: ^1.94.0
   oxlint-tsgolint: ^7.0.2007
   typescript: ^7.0.2
-  ultracite: ^8.2.0
+  ultracite: ^8.2.1
