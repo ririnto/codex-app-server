@@ -24,7 +24,7 @@
     "check:plugin-version": "node release/check-plugin-version.mjs",
     "check:markdownlint-cli2": "markdownlint-cli2",
     "check:types": "tsc -p tsconfig.json --noEmit --pretty false",
-    "check:ultracite": "ultracite check --type-aware",
+    "check:ultracite": "ultracite check",
     "fix": "run-p fix:*",
     "fix:markdownlint-cli2": "markdownlint-cli2 --fix",
     "fix:ultracite": "ultracite fix",
