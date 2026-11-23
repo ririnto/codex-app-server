@@ -13,3 +13,5 @@ catalog:
   oxlint-tsgolint: ^7.0.2008
   typescript: ^7.0.2
   ultracite: ^8.3.1
+overrides:
+  "micromark-extension-math@3.1.0>katex": ^0.19.1
