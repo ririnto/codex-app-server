@@ -19,6 +19,8 @@ jobs:
         with:
           node-version-file: package.json
       - uses: pnpm/action-setup@v6
+        with:
+          cache: true
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check
   macos:
@@ -30,5 +32,7 @@ jobs:
         with:
           node-version-file: package.json
       - uses: pnpm/action-setup@v6
+        with:
+          cache: true
       - run: pnpm install --frozen-lockfile --prod
       - run: node --test tests/server.test.mjs
