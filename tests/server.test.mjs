@@ -517,13 +517,15 @@ await test("rejects non-positive page and trailing counts before opening a daemo
   );
 });
 
-await test("buffers early completion, matches the turn, and returns structured failure diagnostics", async (t) => {
+await test("waited sends return terminal status and diagnostics without commentary", async (t) => {
   const diagnostic = {
     codexErrorInfo: "usageLimitExceeded",
     message: "Fixture diagnostic"
   };
   const { client } = await fixture(t, ({ message, reply, ws }) => {
     if (message.method === "turn/start") {
+      const status = turnInput.parse(message.params).input[0]?.text;
+      const id = `fixture-${status}-turn`;
       for (const note of [
         {
           method: "turn/completed",
@@ -532,39 +534,47 @@ await test("buffers early completion, matches the turn, and returns structured f
         {
           method: "item/completed",
           params: {
-            item: { text: "Fixture final", type: "agentMessage" },
-            turnId: "fixture-turn"
+            item: {
+              phase: "commentary",
+              text: "Fixture progress",
+              type: "agentMessage"
+            },
+            turnId: id
           }
         },
         {
           method: "turn/completed",
           params: {
-            turn: { error: diagnostic, id: "fixture-turn", status: "failed" }
+            turn: {
+              error: status === "failed" ? diagnostic : null,
+              id,
+              status
+            }
           }
         }
       ]) {
         ws.send(JSON.stringify(note));
       }
-      reply({ turn: { id: "fixture-turn" } });
+      reply({ turn: { id } });
     } else {
       reply(message.method === "thread/read" ? { thread: { turns: [] } } : {});
     }
   });
-  const result = await call(client, "codex_send", {
-    text: "Authorized fixture turn",
-    thread_id: "fixture-thread",
-    wait_seconds: 2
-  });
-  const failed = z
-    .looseObject({
-      error: z.unknown(),
-      finalMessage: z.string(),
-      status: z.string()
+  await Promise.all(
+    ["failed", "interrupted"].map(async (status) => {
+      const result = await call(client, "codex_send", {
+        text: status,
+        thread_id: `fixture-${status}`,
+        wait_seconds: 2
+      });
+      assert.deepEqual(result.value, {
+        ...(status === "failed" ? { error: diagnostic } : {}),
+        finalMessage: null,
+        status,
+        turnId: `fixture-${status}-turn`
+      });
     })
-    .parse(result.value);
-  assert.equal(failed.status, "failed");
-  assert.equal(failed.finalMessage, "Fixture final");
-  assert.deepEqual(failed.error, diagnostic);
+  );
 });
 
 await test("generated completion interleavings return only the requested turn", async (t) => {
@@ -577,20 +587,23 @@ await test("generated completion interleavings return only the requested turn", 
           method: "turn/completed",
           params: { turn: { id: `other-${current}`, status: "failed" } }
         },
-        {
-          method: "item/completed",
-          params: {
-            item: { text: `answer-${current}`, type: "agentMessage" },
-            turnId: id
-          }
-        },
-        {
-          method: "item/completed",
-          params: {
-            item: { text: `other-${current}`, type: "agentMessage" },
+        ...[
+          { phase: "final_answer", text: `answer-${current}`, turnId: id },
+          {
+            phase: "final_answer",
+            text: `other-${current}`,
             turnId: `other-${current}`
+          },
+          { phase: "final_answer", text: "Unattributed answer" },
+          { phase: "partial_answer", text: "Partial answer", turnId: id },
+          { phase: null, text: "Unclassified message", turnId: id }
+        ].map(({ phase, text, turnId }) => ({
+          method: "item/completed",
+          params: {
+            item: { phase, text, type: "agentMessage" },
+            turnId
           }
-        },
+        })),
         {
           method: "turn/completed",
           params: { turn: { id, status: "completed" } }
@@ -621,7 +634,7 @@ await test("generated completion interleavings return only the requested turn", 
       turnId: `generated-turn-${current}`
     });
     current += 1;
-    if (current <= 4) {
+    if (current <= 7) {
       await checkInterleaving();
     }
   };
