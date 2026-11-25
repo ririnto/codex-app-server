@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import { CORE_SCHEMA, load as yamlParser } from "js-yaml";
 import { z } from "zod";
@@ -64,7 +64,7 @@ const validateStep = (step, location) => {
  * @param {string} content - Workflow YAML.
  * @param {string} source - Workflow path for diagnostics.
  */
-export const validateWorkflowActionDefaults = (content, source) => {
+const validateWorkflowActionDefaults = (content, source) => {
   const parsed = workflow.safeParse(
     yamlParser(content, { filename: source, schema: CORE_SCHEMA })
   );
@@ -77,24 +77,19 @@ export const validateWorkflowActionDefaults = (content, source) => {
     : [];
 };
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-) {
-  const root = fileURLToPath(new URL("../", import.meta.url));
-  const directory = path.join(root, ".github/workflows");
-  const errors = readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /\.ya?ml$/u.test(entry.name))
-    .map((entry) => path.join(directory, entry.name))
-    .toSorted()
-    .flatMap((file) =>
-      validateWorkflowActionDefaults(
-        readFileSync(file, "utf-8"),
-        path.relative(root, file)
-      )
-    );
-  if (errors.length > 0) {
-    process.stderr.write(`${errors.join("\n")}\n`);
-    process.exitCode = 1;
-  }
+const root = fileURLToPath(new URL("../", import.meta.url));
+const directory = path.join(root, ".github/workflows");
+const errors = readdirSync(directory, { withFileTypes: true })
+  .filter((entry) => entry.isFile() && /\.ya?ml$/u.test(entry.name))
+  .map((entry) => path.join(directory, entry.name))
+  .toSorted()
+  .flatMap((file) =>
+    validateWorkflowActionDefaults(
+      readFileSync(file, "utf-8"),
+      path.relative(root, file)
+    )
+  );
+if (errors.length > 0) {
+  process.stderr.write(`${errors.join("\n")}\n`);
+  process.exitCode = 1;
 }

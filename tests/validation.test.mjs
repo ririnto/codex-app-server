@@ -1,28 +1,63 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  writeFile
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
+import { execa } from "execa";
 import { load as yamlParser } from "js-yaml";
 import { z } from "zod";
 
 import { validateIssueForms } from "../release/check-issue-forms.mjs";
 import { validatePluginVersions } from "../release/check-plugin-version.mjs";
-import { validateWorkflowActionDefaults } from "../rules/check-workflow-action-defaults.mjs";
 
 const repositoryRoot = new URL("../", import.meta.url);
 
-await test("workflow validation reports only equal literals at approved action refs", () => {
-  const content = `jobs:
+await test("the workflow check reports only equal literals at approved action refs", async (t) => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "codex-workflow-defaults-")
+  );
+  t.after(async () => {
+    await rm(directory, { force: true, recursive: true });
+  });
+  const checker = "rules/check-workflow-action-defaults.mjs";
+  const metadata = "rules/workflow-action-defaults.yaml";
+  const workflow = path.join(".github", "workflows", "check.yaml");
+  const fixture = path.join(directory, workflow);
+  await mkdir(path.join(directory, "rules"));
+  await mkdir(path.dirname(fixture), { recursive: true });
+  await copyFile(
+    new URL(checker, repositoryRoot),
+    path.join(directory, checker)
+  );
+  await copyFile(
+    new URL(metadata, repositoryRoot),
+    path.join(directory, metadata)
+  );
+  await symlink(
+    fileURLToPath(new URL("node_modules", repositoryRoot)),
+    path.join(directory, "node_modules"),
+    "junction"
+  );
+  const args = [checker];
+  const options = { cwd: directory, reject: false };
+  const controls = `jobs:
   check:
     steps:
       - uses: actions/setup-node@v7
         with:
-          check-latest: false
+          check-latest: true
           package-manager-cache: true
           node-version-file: package.json
-      - uses: actions/setup-node@v7
-        with:
-          check-latest: true
       - uses: actions/setup-node@v7
         with:
           check-latest: \${{ inputs.check-latest }}
@@ -36,12 +71,25 @@ await test("workflow validation reports only equal literals at approved action r
         with:
           run_install: null
 `;
-  const errors = validateWorkflowActionDefaults(content, "check.yaml");
-  assert.equal(errors.length, 1);
-  assert.match(
-    errors[0],
-    /check\.yaml: jobs\.check\.steps\[1\]: omit check-latest for actions\/setup-node@v7\b/u
+  await writeFile(fixture, controls);
+  const valid = await execa(process.execPath, args, options);
+  assert.equal(valid.exitCode, 0, valid.stderr);
+  assert.equal(valid.stderr, "");
+  await writeFile(
+    fixture,
+    `${controls}      - uses: actions/setup-node@v7
+        with:
+          check-latest: false
+`
   );
+  const invalid = await execa(process.execPath, args, options);
+  assert.equal(invalid.exitCode, 1, invalid.stderr);
+  const diagnostics = invalid.stderr.split("\n");
+  assert.equal(diagnostics.length, 1, invalid.stderr);
+  assert.ok(diagnostics[0].includes(workflow));
+  assert.ok(diagnostics[0].includes("jobs.check.steps[6]"));
+  assert.ok(diagnostics[0].includes("actions/setup-node@v7"));
+  assert.ok(diagnostics[0].includes("check-latest"));
 });
 
 const validIssueForm = `name: Bug report
