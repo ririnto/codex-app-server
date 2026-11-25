@@ -1,5 +1,3 @@
-# Inputs are approved from action.yml at each recorded commit.
-# Context-dependent defaults stay excluded even when the metadata declares a literal.
 actions/checkout@v7:
   commit: 3d3c42e5aac5ba805825da76410c181273ba90b1
   inputs:
