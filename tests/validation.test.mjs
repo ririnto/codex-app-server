@@ -24,17 +24,32 @@ await test("the workflow package check distinguishes literals, anchors, and alia
   });
   const workflow = "check.yaml";
   const fixture = path.join(directory, workflow);
-  const args = [
-    "--silent",
-    "run",
-    "check:workflow-action-defaults",
-    "--workflows",
-    directory,
-    "--json"
-  ];
+  const command = ["--silent", "run", "check:workflow-action-defaults"];
+  const args = [...command, "--workflows", directory, "--json"];
   const options = { cwd: fileURLToPath(repositoryRoot), reject: false };
-  const controls = `env:
+  const listing = await execa("pnpm", [...command, "--list-metadata"], options);
+  assert.equal(listing.exitCode, 0, listing.stderr);
+  const metadata = z
+    .record(
+      z.string(),
+      z.looseObject({
+        commit: z.string(),
+        inputs: z.record(z.string(), z.unknown())
+      })
+    )
+    .parse(JSON.parse(listing.stdout));
+  assert.ok(
+    z
+      .object({ contextDependent: z.string().min(1) })
+      .safeParse(
+        metadata["actions/setup-node@v7"].inputs["package-manager-cache"]
+      ).success
+  );
+  const controls = `on: push
+env:
   DEPTH: &env_depth 1
+  USES_KEY: &uses_key uses
+  WITH_KEY: &with_key with
 jobs:
   check:
     steps:
@@ -59,15 +74,31 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           run_install: null
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0.9999999999999995
+          filter: "null"
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: "01"
 `;
-  await writeFile(fixture, controls);
+  await Promise.all([
+    writeFile(path.join(directory, "00-empty.yaml"), ""),
+    writeFile(path.join(directory, "01-comments.yaml"), "# workflow notes\n"),
+    writeFile(path.join(directory, "02-no-jobs.yaml"), "name: Test\n"),
+    writeFile(
+      path.join(directory, "03-no-steps.yaml"),
+      "jobs: {check: {runs-on: ubuntu-latest}}\n"
+    ),
+    writeFile(fixture, controls)
+  ]);
   const valid = await execa("pnpm", args, options);
   assert.equal(valid.exitCode, 0, valid.stderr);
   assert.equal(valid.stderr, "");
   const failures = `${controls}      - uses: actions/setup-node@v7
         with:
           CHECK-LATEST: &unused false
-      - uses: actions/checkout@v7 # Alias-only input.
+      - uses: actions/checkout@v7
         with:
           fetch-depth: *env_depth
       - &checkout_step
@@ -76,36 +107,44 @@ jobs:
           fetch-depth: &depth 1
       - uses: example/unreviewed@v1
         with: *checkout_inputs
-      - uses: actions/checkout@v7 # Shared input mapping.
+      - uses: actions/checkout@v7
         with: *checkout_inputs
       - *checkout_step
       - run: echo depth
         env:
           DEPTH: *depth
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0.9999999999999996
+          sparse-checkout: null
+          ssh-key: ""
+      - ? *uses_key
+        : actions/checkout@v7
+        ? *with_key
+        :
+          fetch-depth: 0x1
+  sequence_source:
+    steps: &shared_steps
+      - uses: actions/checkout@v7
+        with:
+          filter:
+  sequence_use:
+    steps: *shared_steps
 `;
   await writeFile(fixture, failures);
   const invalid = await execa("pnpm", args, options);
   assert.equal(invalid.exitCode, 1, invalid.stderr);
-  const location = z.object({
+  const location = z.looseObject({
     file: z.literal(workflow),
     line: z.number().int().positive()
   });
   const diagnostic = location.extend({
-    actions: z.array(z.string()),
-    anchors: z.array(
-      z.object({
-        definition: location,
-        name: z.string(),
-        uses: z.array(location)
-      })
-    ),
     input: z.string(),
     kind: z.string(),
-    ref: z.string(),
-    removedAnchors: z.array(z.string()).optional()
+    ref: z.string()
   });
   const diagnostics = z.array(diagnostic).parse(JSON.parse(invalid.stderr));
-  assert.equal(diagnostics.length, 5);
+  assert.equal(diagnostics.length, 11);
   const lines = failures.split("\n");
   /** @param {string} text - Unique text on a fixture line. */
   const lineOf = (text) => lines.findIndex((line) => line.includes(text)) + 1;
@@ -115,18 +154,28 @@ jobs:
   assert.equal(redundant.kind, "omit");
   assert.equal(redundant.ref, "actions/setup-node@v7");
   assert.equal(redundant.input, "CHECK-LATEST");
-  assert.ok(redundant.removedAnchors?.includes("unused") === true);
+  assert.ok(
+    z.array(z.string()).parse(redundant.removedAnchors).includes("unused")
+  );
   const alias = byLine.get(lineOf("fetch-depth: *env_depth"));
   assert.ok(alias !== undefined);
   assert.equal(alias.kind, "hand-edit");
   assert.equal(alias.ref, "actions/checkout@v7");
   assert.equal(alias.input, "fetch-depth");
-  assert.equal(alias.anchors.length, 1);
-  assert.equal(alias.anchors[0].name, "env_depth");
-  assert.equal(alias.anchors[0].definition.line, lineOf("DEPTH: &env_depth"));
+  const anchorLocation = z.looseObject({
+    definition: location,
+    name: z.string(),
+    uses: z.array(location)
+  });
+  const envDepth = z
+    .array(anchorLocation)
+    .parse(alias.anchors)
+    .find(({ name }) => name === "env_depth");
+  assert.ok(envDepth !== undefined);
+  assert.equal(envDepth.definition.line, lineOf("DEPTH: &env_depth"));
   assert.deepEqual(
-    alias.anchors[0].uses.map(({ line }) => line),
-    [lineOf("fetch-depth: *env_depth")]
+    new Set(envDepth.uses.map(({ line }) => line)),
+    new Set([lineOf("fetch-depth: *env_depth")])
   );
   const shared = byLine.get(lineOf("fetch-depth: &depth"));
   assert.ok(shared !== undefined);
@@ -134,19 +183,20 @@ jobs:
   assert.equal(shared.ref, "actions/checkout@v7");
   assert.equal(shared.input, "fetch-depth");
   assert.deepEqual(
-    new Set(shared.actions),
+    new Set(z.array(z.string()).parse(shared.actions)),
     new Set(["actions/checkout@v7", "example/unreviewed@v1"])
   );
+  const sharedAnchors = z.array(anchorLocation).parse(shared.anchors);
   assert.deepEqual(
-    new Set(shared.anchors.map(({ name }) => name)),
+    new Set(sharedAnchors.map(({ name }) => name)),
     new Set(["checkout_step", "checkout_inputs", "depth"])
   );
-  const scalar = shared.anchors.find(({ name }) => name === "depth");
+  const scalar = sharedAnchors.find(({ name }) => name === "depth");
   assert.ok(scalar !== undefined);
   assert.equal(scalar.definition.line, lineOf("fetch-depth: &depth"));
   assert.deepEqual(
-    scalar.uses.map(({ line }) => line),
-    [lineOf("DEPTH: *depth")]
+    new Set(scalar.uses.map(({ line }) => line)),
+    new Set([lineOf("DEPTH: *depth")])
   );
   const sharedMappingUse =
     lines.findLastIndex((line) => line.includes("with: *checkout_inputs")) + 1;
@@ -156,6 +206,25 @@ jobs:
     assert.equal(detached.kind, "detach");
     assert.equal(detached.ref, "actions/checkout@v7");
     assert.equal(detached.input, "fetch-depth");
+  }
+  /** @type {[number, string, string][]} */
+  const scalarFindings = [
+    [lineOf("fetch-depth: 0.9999999999999996"), "fetch-depth", "omit"],
+    [lineOf("sparse-checkout: null"), "sparse-checkout", "omit"],
+    [lineOf('ssh-key: ""'), "ssh-key", "omit"],
+    [lineOf("fetch-depth: 0x1"), "fetch-depth", "hand-edit"],
+    [
+      lines.findIndex((line) => line.trim() === "filter:") + 1,
+      "filter",
+      "hand-edit"
+    ],
+    [lineOf("steps: *shared_steps"), "filter", "detach"]
+  ];
+  for (const [line, input, kind] of scalarFindings) {
+    const finding = byLine.get(line);
+    assert.equal(finding?.ref, "actions/checkout@v7");
+    assert.equal(finding?.kind, kind);
+    assert.equal(finding?.input, input);
   }
   await writeFile(
     fixture,
@@ -167,8 +236,7 @@ jobs:
     .array(
       location.extend({
         column: z.number().int().positive(),
-        kind: z.literal("parse"),
-        message: z.string().min(1)
+        kind: z.literal("parse")
       })
     )
     .parse(JSON.parse(malformed.stderr));
@@ -176,6 +244,83 @@ jobs:
   assert.equal(parseErrors[0].line, 2);
   assert.ok(!malformed.stderr.includes("source-sentinel"));
   assert.ok(!malformed.stderr.includes(directory));
+});
+
+await test("the workflow package check leaves unverified local actions to review", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-local-actions-"));
+  t.after(async () => {
+    await rm(directory, { force: true, recursive: true });
+  });
+  const workflow = "local.yaml";
+  const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+  const fixture = `on: push
+jobs:
+  local:
+    steps:
+      - uses: ${checkout}
+        with:
+          ref: \${{ github.workflow_sha }}
+      - uses: ./unapproved
+      - uses: ./after-action
+  replaces_workspace:
+    steps:
+      - uses: ${checkout}
+        with:
+          REF: main
+          repository: other/repo
+      - uses: ./after-checkout
+        with:
+          fetch-depth: 1
+  script:
+    steps:
+      - uses: ${checkout}
+        with:
+          ref: \${{ github.workflow_sha }}
+      - run: echo hello
+      - uses: ./after-script
+  empty_workspace:
+    steps:
+      - uses: ./before-checkout
+`;
+  await writeFile(path.join(directory, workflow), fixture);
+  const result = await execa(
+    "pnpm",
+    [
+      "--silent",
+      "run",
+      "check:workflow-action-defaults",
+      "--workflows",
+      directory,
+      "--json"
+    ],
+    { cwd: fileURLToPath(repositoryRoot), reject: false }
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const reviews = z
+    .array(
+      z.looseObject({
+        file: z.literal(workflow),
+        kind: z.literal("local-action-review"),
+        line: z.number().int().positive(),
+        reason: z.string(),
+        ref: z.string()
+      })
+    )
+    .parse(JSON.parse(result.stdout));
+  const lines = fixture.split("\n");
+  const expected = new Map([
+    ["./unapproved", "metadata"],
+    ["./after-action", "workspace"],
+    ["./after-checkout", "workspace"],
+    ["./after-script", "workspace"],
+    ["./before-checkout", "workspace"]
+  ]);
+  assert.equal(reviews.length, expected.size);
+  for (const { line, reason, ref } of reviews) {
+    assert.equal(reason, expected.get(ref));
+    assert.equal(line, lines.findIndex((text) => text.includes(ref)) + 1);
+    expected.delete(ref);
+  }
 });
 
 const validIssueForm = `name: Bug report

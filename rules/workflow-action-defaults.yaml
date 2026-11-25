@@ -1,49 +1,67 @@
 actions/checkout@v7:
   commit: 3d3c42e5aac5ba805825da76410c181273ba90b1
   inputs:
-    allow-unsafe-pr-checkout: { default: "false" }
-    clean: { default: "true" }
-    fetch-depth: { default: "1" }
-    fetch-tags: { default: "false" }
-    filter: {}
-    github-server-url: { contextDependent: true }
-    lfs: { default: "false" }
-    path: {}
-    persist-credentials: { default: "true" }
-    ref: { contextDependent: true }
-    repository: { contextDependent: true }
-    set-safe-directory: { default: "true" }
-    show-progress: { default: "true" }
-    sparse-checkout: {}
-    sparse-checkout-cone-mode: { default: "true" }
-    ssh-key: {}
-    ssh-known-hosts: {}
-    ssh-strict: { default: "true" }
+    allow-unsafe-pr-checkout: { default: false }
+    clean: { default: true }
+    fetch-depth: { default: 1 }
+    fetch-tags: { default: false }
+    filter: { default: null }
+    github-server-url:
+      contextDependent: Uses the server URL of the workflow's GitHub instance.
+    lfs: { default: false }
+    path:
+      contextDependent: Uses the runner's GITHUB_WORKSPACE directory.
+    persist-credentials: { default: true }
+    ref:
+      contextDependent: Uses the triggering ref or SHA for the workflow repository and the default branch for another repository.
+    repository:
+      contextDependent: Uses github.repository.
+    set-safe-directory: { default: true }
+    show-progress: { default: true }
+    sparse-checkout: { default: null }
+    sparse-checkout-cone-mode: { default: true }
+    ssh-key: { noDefault: true }
+    ssh-known-hosts: { noDefault: true }
+    ssh-strict: { default: true }
     ssh-user: { default: git }
-    submodules: { default: "false" }
-    token: { contextDependent: true }
+    submodules: { default: false }
+    token:
+      contextDependent: Uses github.token.
 actions/setup-node@v7:
   commit: 949feb2413d6458794dcd2491c4babbbce0c15c1
   inputs:
-    architecture: { contextDependent: true }
-    cache: {}
-    cache-dependency-path: {}
-    check-latest: { default: "false" }
-    mirror: {}
-    mirror-token: {}
-    node-version: {}
-    node-version-file: {}
-    package-manager-cache: { contextDependent: true, default: "true" }
-    registry-url: {}
-    scope: { contextDependent: true }
-    token: { contextDependent: true }
+    architecture:
+      contextDependent: Uses the runner's architecture when installing Node.js.
+    cache:
+      contextDependent: Detects npm from package.json when automatic package-manager caching is enabled.
+    cache-dependency-path:
+      contextDependent: Locates a lockfile in the workspace using the selected package manager's lockfile patterns.
+    check-latest: { default: false }
+    mirror: { noDefault: true }
+    mirror-token: { noDefault: true }
+    node-version:
+      contextDependent: Uses node-version-file if supplied and leaves the runner's Node.js in place when no version is resolved.
+    node-version-file: { noDefault: true }
+    package-manager-cache:
+      contextDependent: Enables automatic caching when cache is unset and package.json identifies npm.
+      default: true
+    registry-url: { noDefault: true }
+    scope:
+      contextDependent: Uses the repository owner when registry-url points to npm.pkg.github.com.
+    token:
+      contextDependent: Uses github.token on github.com and an empty value on GitHub Enterprise Server.
 pnpm/action-setup@v6:
   commit: 73e46992e05b19abd31f2f3c20e0e7370d762115
   inputs:
     cache: { default: "false" }
     cache_dependency_path: { default: pnpm-lock.yaml }
-    dest: { contextDependent: true, default: "~/setup-pnpm" }
+    dest:
+      contextDependent: Expands the tilde in the default path using the runner's home directory.
+      default: "~/setup-pnpm"
     package_json_file: { default: package.json }
     run_install: { default: "null" }
-    standalone: { default: "false" }
-    version: {}
+    standalone:
+      contextDependent: Uses the standalone executable for pnpm before v12 when the system Node.js is older than 22.13.
+      default: "false"
+    version:
+      contextDependent: Reads devEngines.packageManager or packageManager from the manifest selected by package_json_file.

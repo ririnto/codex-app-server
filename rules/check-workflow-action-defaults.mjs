@@ -8,39 +8,72 @@ import {
   CORE_SCHEMA,
   eventsToAst,
   parseEvents,
+  SCALAR_STYLE,
   visit,
   YAMLException
 } from "js-yaml";
 import { z } from "zod";
 
-const metadataSchema = z.record(
-  z.string(),
-  z.object({
-    commit: z.string(),
-    inputs: z.record(
-      z.string().toLowerCase(),
-      z.object({
-        contextDependent: z.boolean().optional(),
-        default: z.string().optional()
-      })
-    )
+const inputMetadata = z
+  .object({
+    contextDependent: z.string().min(1).optional(),
+    default: z
+      .union([z.string(), z.boolean(), z.number(), z.null()])
+      .optional(),
+    noDefault: z.literal(true).optional()
   })
-);
+  .refine((input) =>
+    input.noDefault === true
+      ? input.default === undefined && input.contextDependent === undefined
+      : input.default !== undefined || input.contextDependent !== undefined
+  );
+const metadataSchema = z
+  .record(
+    z.string(),
+    z.object({
+      commit: z.hash("sha1").nullable(),
+      inputs: z.record(z.string().toLowerCase(), inputMetadata)
+    })
+  )
+  .refine((records) =>
+    Object.entries(records).every(
+      ([ref, record]) => ref.startsWith("./") === (record.commit === null)
+    )
+  );
+const triggers = z.union([
+  z.string(),
+  z.array(z.string()),
+  z.record(z.string(), z.unknown())
+]);
 const workflow = z.object({
+  env: z.unknown().optional(),
   jobs: z.record(
     z.string(),
-    z.object({ steps: z.array(z.unknown()).optional() })
-  )
+    z.object({
+      env: z.unknown().optional(),
+      steps: z.array(z.unknown()).optional()
+    })
+  ),
+  on: z.unknown().optional()
 });
 const actionStep = z.object({
+  if: z.unknown().optional(),
   uses: z.string(),
-  with: z.record(z.string(), z.unknown())
+  with: z.unknown().optional()
+});
+const stepInputs = z.record(z.string(), z.unknown());
+const workflowCheckout = z.strictObject({
+  id: z.string().optional(),
+  name: z.string().optional(),
+  uses: z.string(),
+  with: stepInputs
 });
 const root = fileURLToPath(new URL("../", import.meta.url));
 const { values: options } = parseArgs({
   options: {
     help: { type: "boolean" },
     json: { type: "boolean" },
+    "list-metadata": { type: "boolean" },
     workflows: { type: "string" }
   }
 });
@@ -53,6 +86,8 @@ const parseReasons = new Set([
   "unexpected end of the stream within a single quoted scalar",
   "unexpected end of the stream within a double quoted scalar"
 ]);
+const decimalNumber =
+  /^[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/u;
 
 /**
  * @param {string} filename - YAML path on disk.
@@ -68,7 +103,7 @@ const readYaml = (filename, file) => {
       schema: CORE_SCHEMA,
       source
     });
-    if (documents.length !== 1) {
+    if (documents.length > 1) {
       return {
         error: {
           column: 1,
@@ -227,21 +262,186 @@ const inspectInput = (trail) => {
 };
 
 /**
- * @param {unknown} value - Resolved YAML input value.
- * @param {{contextDependent?: boolean, default?: string} | undefined} approved - Approved input metadata, if available.
+ * .NET G15 rounds the exact binary value to nearest, with ties to even.
+ * @param {number} magnitude - Positive finite double.
  */
-const matchesDefault = (value, approved) => {
-  const scalar =
-    typeof value === "string" ||
-    typeof value === "boolean" ||
-    typeof value === "number"
-      ? String(value)
+const roundSignificand = (magnitude) => {
+  const exponent = Number(magnitude.toExponential().split("e")[1]);
+  const bits = new DataView(new ArrayBuffer(8));
+  bits.setFloat64(0, magnitude);
+  const encoding = bits.getBigUint64(0);
+  const leadingBit = 2n ** 52n;
+  const biasedExponent = encoding / leadingBit;
+  const fraction = encoding % leadingBit;
+  const significand = biasedExponent === 0n ? fraction : fraction + leadingBit;
+  const shift = (biasedExponent === 0n ? 1n : biasedExponent) - 1075n;
+  const decimalShift = BigInt(14 - exponent);
+  const numerator =
+    significand *
+    2n ** (shift > 0n ? shift : 0n) *
+    10n ** (decimalShift > 0n ? decimalShift : 0n);
+  const denominator =
+    2n ** (shift < 0n ? -shift : 0n) *
+    10n ** (decimalShift < 0n ? -decimalShift : 0n);
+  const lower = numerator / denominator;
+  const midpoint = (numerator % denominator) * 2n;
+  const roundUp =
+    midpoint > denominator || (midpoint === denominator && lower % 2n === 1n);
+  const digits = (lower + BigInt(roundUp)).toString();
+  return {
+    digits: digits.replace(/0+$/u, ""),
+    exponent: exponent + digits.length - 15
+  };
+};
+
+/**
+ * @param {string} value - Decoded YAML number.
+ * @param {boolean} integer - The YAML tag is an integer.
+ */
+const readRunnerNumber = (value, integer) => {
+  if (integer && /^0[ox]/u.test(value)) {
+    const whole = Number(value);
+    return whole < 2 ** 32
+      ? String(whole >= 2 ** 31 ? whole - 2 ** 32 : whole)
       : null;
+  }
+  if (!integer && /^[-+]?\.(?:inf|Inf|INF)$/u.test(value)) {
+    return value.startsWith("-") ? "-Infinity" : "Infinity";
+  }
+  if (!integer && /^\.(?:nan|NaN|NAN)$/u.test(value)) {
+    return "NaN";
+  }
+  return decimalNumber.test(value) ? formatRunnerNumber(Number(value)) : null;
+};
+
+/**
+ * @param {number} value - Double from a GitHub Actions number token.
+ */
+const formatRunnerNumber = (value) => {
+  if (Object.is(value, -0)) {
+    return "-0";
+  }
+  if (
+    !Number.isFinite(value) ||
+    (Number.isInteger(value) && Math.abs(value) < 1e15)
+  ) {
+    return String(value);
+  }
+  const { digits, exponent } = roundSignificand(Math.abs(value));
+  const sign = value < 0 ? "-" : "";
+  const split = exponent + 1;
+  if (exponent < -4 || exponent >= 15) {
+    const fraction = digits.length === 1 ? "" : `.${digits.slice(1)}`;
+    const exponentSign = exponent < 0 ? "-" : "+";
+    const places = String(Math.abs(exponent)).padStart(2, "0");
+    return `${sign}${digits[0]}${fraction}E${exponentSign}${places}`;
+  }
+  if (split <= 0) {
+    return `${sign}0.${"0".repeat(-split)}${digits}`;
+  }
+  if (split >= digits.length) {
+    return sign + digits.padEnd(split, "0");
+  }
+  return `${sign}${digits.slice(0, split)}.${digits.slice(split)}`;
+};
+
+/**
+ * @param {YamlNode | undefined} node - Resolved node from the workflow or metadata.
+ */
+const readRunnerScalar = (node) => {
+  if (node?.kind !== "scalar") {
+    return null;
+  }
+  const { value } = node;
+  let { tag } = node;
+  if (tag.startsWith("!!")) {
+    tag = `tag:yaml.org,2002:${tag.slice(2)}`;
+  } else if (tag.startsWith("!<") && tag.endsWith(">")) {
+    tag = tag.slice(2, -1);
+  }
+  if (tag === "tag:yaml.org,2002:str") {
+    if (
+      !node.tagged &&
+      node.style === SCALAR_STYLE.PLAIN &&
+      decimalNumber.test(value)
+    ) {
+      return formatRunnerNumber(Number(value));
+    }
+    return value.includes("${{") ? null : value;
+  }
+  if (node.style !== SCALAR_STYLE.PLAIN) {
+    return null;
+  }
+  if (tag === "tag:yaml.org,2002:null") {
+    return "";
+  }
+  if (tag === "tag:yaml.org,2002:bool") {
+    return value.toLowerCase();
+  }
+  if (tag === "tag:yaml.org,2002:int" || tag === "tag:yaml.org,2002:float") {
+    return readRunnerNumber(value, tag === "tag:yaml.org,2002:int");
+  }
+  return null;
+};
+
+/**
+ * @param {ReturnType<typeof indexSyntax>} syntax - YAML locations for the approved metadata.
+ * @param {z.infer<typeof metadataSchema>} metadata - Approved inputs by exact action ref.
+ * @returns {Map<string, Map<string, string>>} Runner readings by reference and input.
+ */
+const indexDefaults = (syntax, metadata) =>
+  new Map(
+    Object.entries(metadata).map(([ref, { inputs }]) => [
+      ref,
+      new Map(
+        Object.entries(inputs).flatMap(([name, approved]) => {
+          if (approved.contextDependent !== undefined) {
+            return [];
+          }
+          if (approved.noDefault === true) {
+            return [[name, ""]];
+          }
+          const entry = traceNode(syntax, [ref, "inputs", name, "default"]).at(
+            -1
+          )?.value;
+          const value = readRunnerScalar(entry?.anchor?.node ?? entry?.node);
+          return value === null ? [] : [[name, value]];
+        })
+      )
+    ])
+  );
+
+/**
+ * @param {unknown} event - Workflow trigger configuration.
+ */
+const hasCaller = (event) => {
+  const parsed = triggers.safeParse(event);
+  if (!parsed.success) {
+    return true;
+  }
+  if (typeof parsed.data === "string") {
+    return parsed.data === "workflow_call";
+  }
+  return Array.isArray(parsed.data)
+    ? parsed.data.includes("workflow_call")
+    : Object.hasOwn(parsed.data, "workflow_call");
+};
+
+/**
+ * @param {unknown} step - First step of the same job.
+ * @param {string | null | undefined} checkoutCommit - Approved checkout revision.
+ */
+const checksOutWorkflow = (step, checkoutCommit) => {
+  const checkout = workflowCheckout.safeParse(step);
+  if (!checkout.success || typeof checkoutCommit !== "string") {
+    return false;
+  }
+  const inputs = Object.entries(checkout.data.with);
   return (
-    scalar !== null &&
-    !scalar.includes("${{") &&
-    approved?.contextDependent !== true &&
-    scalar === approved?.default
+    checkout.data.uses === `actions/checkout@${checkoutCommit}` &&
+    inputs.length === 1 &&
+    inputs[0][0].toLowerCase() === "ref" &&
+    inputs[0][1] === `\${{ github.workflow_sha }}`
   );
 };
 
@@ -276,7 +476,7 @@ const inputDiagnostic = (file, input, name, ref, actions, defaultsAgree) => {
     line,
     ref
   };
-  if (aliasLine !== null) {
+  if (aliasLine !== null && !valueIsAlias) {
     return {
       ...diagnostic,
       kind: "detach",
@@ -285,7 +485,7 @@ const inputDiagnostic = (file, input, name, ref, actions, defaultsAgree) => {
     };
   }
   if (valueIsAlias || linked.length > 0) {
-    return defaultsAgree
+    return valueIsAlias || defaultsAgree
       ? {
           ...diagnostic,
           kind: "hand-edit",
@@ -317,12 +517,35 @@ const inputDiagnostic = (file, input, name, ref, actions, defaultsAgree) => {
 };
 
 /**
+ * @param {string} file - Relative workflow path for the review report.
+ * @param {string} ref - Local action reference.
+ * @param {number} line - Line of the reference or its alias use.
+ * @param {"workspace" | "metadata"} reason - Missing prerequisite for comparison.
+ */
+const localReview = (file, ref, line, reason) => ({
+  file,
+  kind: "local-action-review",
+  line,
+  message: `Left ${ref} to review. ${reason === "workspace" ? "The workspace at this step is unverified." : "Approval from the workflow's own revision is unavailable."}`,
+  reason,
+  ref
+});
+
+/**
  * @param {string} filename - Workflow path on disk.
  * @param {string} file - Relative workflow path for diagnostics.
- * @param {z.infer<typeof metadataSchema>} metadata - Approved inputs by exact action ref.
- * @returns {(ReturnType<typeof inputDiagnostic> | NonNullable<ReturnType<typeof readYaml>["error"]>)[]} Workflow diagnostics.
+ * @param {ReturnType<typeof indexDefaults>} defaults - Runner readings by approved ref and input name.
+ * @param {string | null | undefined} checkoutCommit - Approved checkout revision.
+ * @param {boolean} sameTree - The workflow and approval file are in the same checkout.
+ * @returns {(ReturnType<typeof inputDiagnostic> | ReturnType<typeof localReview> | NonNullable<ReturnType<typeof readYaml>["error"]>)[]} Workflow findings.
  */
-const validateWorkflowActionDefaults = (filename, file, metadata) => {
+const validateWorkflowActionDefaults = (
+  filename,
+  file,
+  defaults,
+  checkoutCommit,
+  sameTree
+) => {
   const document = readYaml(filename, file);
   if (document.error !== undefined) {
     return [document.error];
@@ -332,65 +555,105 @@ const validateWorkflowActionDefaults = (filename, file, metadata) => {
     return [];
   }
   const syntax = indexSyntax(document.events, document.source);
+  /** @type {ReturnType<typeof localReview>[]} */
+  const reviews = [];
   const steps = Object.entries(parsed.data.jobs).flatMap(
-    ([job, { steps: jobSteps = [] }]) =>
+    ([job, { env, steps: jobSteps = [] }]) =>
       jobSteps.flatMap((step, index) => {
         const action = actionStep.safeParse(step);
-        const segments = ["jobs", job, "steps", index, "with"];
+        if (!action.success) {
+          return [];
+        }
+        const { uses: ref } = action.data;
+        const stepPath = ["jobs", job, "steps", index];
+        let approved = defaults.get(ref);
+        if (ref.startsWith("./")) {
+          const workspaceVerified =
+            index === 1 &&
+            env === undefined &&
+            parsed.data.env === undefined &&
+            action.data.if === undefined &&
+            !hasCaller(parsed.data.on) &&
+            checksOutWorkflow(jobSteps[0], checkoutCommit);
+          if (!workspaceVerified || !sameTree || approved === undefined) {
+            const { line } = inspectInput(
+              traceNode(syntax, [...stepPath, "uses"])
+            );
+            reviews.push(
+              localReview(
+                file,
+                ref,
+                line,
+                workspaceVerified ? "metadata" : "workspace"
+              )
+            );
+            approved = undefined;
+          }
+        }
+        const segments = [...stepPath, "with"];
         const entry = traceNode(syntax, segments).at(-1)?.value;
         const mapping = entry?.anchor?.node ?? entry?.node;
-        return action.success && mapping?.kind === "mapping"
-          ? [{ action: action.data, mapping, segments }]
+        const inputs = stepInputs.safeParse(action.data.with);
+        return inputs.success && mapping?.kind === "mapping"
+          ? [{ approved, inputs: inputs.data, mapping, ref, segments }]
           : [];
       })
   );
   const users = Map.groupBy(steps, ({ mapping }) => mapping);
-  return steps.flatMap(({ action, mapping, segments }) => {
-    const { uses: ref, with: inputs } = action;
-    if (!Object.hasOwn(metadata, ref)) {
-      return [];
-    }
-    const actions = [
-      ...new Set(users.get(mapping)?.map(({ action: user }) => user.uses))
-    ];
-    return [
-      ...Map.groupBy(Object.entries(inputs), ([name]) => name.toLowerCase())
-    ].flatMap(([normalized, entries]) => {
-      const [[name, value]] = entries;
-      if (
-        entries.length !== 1 ||
-        !matchesDefault(value, metadata[ref].inputs[normalized])
-      ) {
+  const diagnostics = steps.flatMap(
+    ({ approved, inputs, mapping, ref, segments }) => {
+      if (approved === undefined) {
         return [];
       }
-      const trail = traceNode(syntax, [...segments, name]);
-      const entry = trail.at(-1)?.value;
-      const node = entry?.anchor?.node ?? entry?.node;
-      const defaultsAgree = actions.every(
-        (use) =>
-          Object.hasOwn(metadata, use) &&
-          matchesDefault(value, metadata[use].inputs[normalized])
-      );
-      return node?.kind === "scalar"
-        ? [
-            inputDiagnostic(
-              file,
-              inspectInput(trail),
-              name,
-              ref,
-              actions,
-              defaultsAgree
-            )
-          ]
-        : [];
-    });
-  });
+      const shared = users.get(mapping) ?? [];
+      const actions = [...new Set(shared.map((user) => user.ref))];
+      return [
+        ...Map.groupBy(Object.entries(inputs), ([name]) => name.toLowerCase())
+      ].flatMap(([normalized, entries]) => {
+        const [[name]] = entries;
+        if (entries.length !== 1 || !approved.has(normalized)) {
+          return [];
+        }
+        const trail = traceNode(syntax, [...segments, name]);
+        const entry = trail.at(-1)?.value;
+        const value = readRunnerScalar(entry?.anchor?.node ?? entry?.node);
+        return value !== null && value === approved.get(normalized)
+          ? [
+              inputDiagnostic(
+                file,
+                inspectInput(trail),
+                name,
+                ref,
+                actions,
+                shared.every((user) => value === user.approved?.get(normalized))
+              )
+            ]
+          : [];
+      });
+    }
+  );
+  return [...diagnostics, ...reviews];
 };
 
 const metadataFile = "rules/workflow-action-defaults.yaml";
+const workflowDirectory = path.join(root, ".github/workflows");
+
+/**
+ * @param {{column?: number, file: string, line: number, message: string}[]} findings - Findings to display.
+ */
+const formatFindings = (findings) =>
+  options.json === true
+    ? JSON.stringify(findings)
+    : findings
+        .map(
+          ({ file, line, column, message }) =>
+            `${file}:${line}${column === undefined ? "" : `:${column}`}: ${message}`
+        )
+        .join("\n");
+
 if (options.help === true) {
   process.stdout.write(
-    "Check workflow action inputs against approved defaults.\n\n--workflows <directory>  Scan a different workflow directory.\n--json                   Print structured diagnostics.\n"
+    "Check workflow action inputs against approved defaults.\n\n--workflows <directory>  Scan a different workflow directory.\n--json                   Print structured findings.\n--list-metadata          Print approved action metadata as JSON.\n"
   );
 } else {
   const metadataDocument = readYaml(
@@ -398,41 +661,52 @@ if (options.help === true) {
     metadataFile
   );
   const metadata = metadataSchema.safeParse(metadataDocument.value);
-  const directory = options.workflows ?? path.join(root, ".github/workflows");
-  /** @type {{column?: number, file: string, kind: string, line: number, message: string}[]} */
-  const errors = metadata.success
-    ? readdirSync(directory, { withFileTypes: true })
-        .filter((entry) => entry.isFile() && /\.ya?ml$/u.test(entry.name))
-        .map((entry) => entry.name)
-        .toSorted()
-        .flatMap((name) =>
-          validateWorkflowActionDefaults(
-            path.join(directory, name),
-            options.workflows === undefined
-              ? path.join(".github/workflows", name)
-              : name,
-            metadata.data
-          )
-        )
-    : [
-        metadataDocument.error ?? {
-          file: metadataFile,
-          kind: "metadata",
-          line: 1,
-          message: "Invalid action metadata."
-        }
-      ];
-  if (errors.length > 0) {
-    const output =
-      options.json === true
-        ? JSON.stringify(errors)
-        : errors
-            .map(
-              (error) =>
-                `${error.file}:${error.line}${"column" in error ? `:${error.column}` : ""}: ${error.message}`
-            )
-            .join("\n");
-    process.stderr.write(`${output}\n`);
+  if (!metadata.success || metadataDocument.error !== undefined) {
+    const error = metadataDocument.error ?? {
+      file: metadataFile,
+      kind: "metadata",
+      line: 1,
+      message: "Invalid action metadata."
+    };
+    process.stderr.write(`${formatFindings([error])}\n`);
     process.exitCode = 1;
+  } else if (options["list-metadata"] === true) {
+    process.stdout.write(`${JSON.stringify(metadata.data)}\n`);
+  } else {
+    const defaults = indexDefaults(
+      indexSyntax(metadataDocument.events, metadataDocument.source),
+      metadata.data
+    );
+    const directory = options.workflows ?? workflowDirectory;
+    const sameTree = path.resolve(directory) === workflowDirectory;
+    const checkoutCommit = metadata.data["actions/checkout@v7"]?.commit;
+    const findings = readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.ya?ml$/u.test(entry.name))
+      .map((entry) => entry.name)
+      .toSorted()
+      .flatMap((name) =>
+        validateWorkflowActionDefaults(
+          path.join(directory, name),
+          options.workflows === undefined
+            ? path.join(".github/workflows", name)
+            : name,
+          defaults,
+          checkoutCommit,
+          sameTree
+        )
+      );
+    const reviews = findings.filter(
+      (finding) => finding.kind === "local-action-review"
+    );
+    const errors = findings.filter(
+      (finding) => finding.kind !== "local-action-review"
+    );
+    if (reviews.length > 0) {
+      process.stdout.write(`${formatFindings(reviews)}\n`);
+    }
+    if (errors.length > 0) {
+      process.stderr.write(`${formatFindings(errors)}\n`);
+      process.exitCode = 1;
+    }
   }
 }
