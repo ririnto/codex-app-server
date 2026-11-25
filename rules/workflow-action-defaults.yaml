@@ -43,7 +43,7 @@ actions/setup-node@v7:
       contextDependent: Uses node-version-file if supplied and leaves the runner's Node.js in place when no version is resolved.
     node-version-file: { noDefault: true }
     package-manager-cache:
-      contextDependent: Enables automatic caching when cache is unset and package.json identifies npm.
+      contextDependent: Enables automatic caching when the cache service is available, cache is unset, and npm is listed in devEngines.packageManager or top-level packageManager in package.json.
       default: true
     registry-url: { noDefault: true }
     scope:

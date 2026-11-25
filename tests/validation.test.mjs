@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -14,6 +14,7 @@ import { validateIssueForms } from "../release/check-issue-forms.mjs";
 import { validatePluginVersions } from "../release/check-plugin-version.mjs";
 
 const repositoryRoot = new URL("../", import.meta.url);
+const workflowCheck = ["--silent", "run", "check:workflow-action-defaults"];
 
 await test("the workflow package check distinguishes literals, anchors, and aliases", async (t) => {
   const directory = await mkdtemp(
@@ -24,27 +25,29 @@ await test("the workflow package check distinguishes literals, anchors, and alia
   });
   const workflow = "check.yaml";
   const fixture = path.join(directory, workflow);
-  const command = ["--silent", "run", "check:workflow-action-defaults"];
-  const args = [...command, "--workflows", directory, "--json"];
+  const args = [...workflowCheck, "--workflows", directory, "--json"];
   const options = { cwd: fileURLToPath(repositoryRoot), reject: false };
-  const listing = await execa("pnpm", [...command, "--list-metadata"], options);
+  const listing = await execa(
+    "pnpm",
+    [...workflowCheck, "--list-metadata"],
+    options
+  );
   assert.equal(listing.exitCode, 0, listing.stderr);
   const metadata = z
-    .record(
-      z.string(),
-      z.looseObject({
-        commit: z.string(),
-        inputs: z.record(z.string(), z.unknown())
+    .object({
+      "actions/setup-node@v7": z.object({
+        inputs: z.object({
+          "package-manager-cache": z.object({
+            contextDependent: z.string().min(1)
+          })
+        })
       })
-    )
+    })
     .parse(JSON.parse(listing.stdout));
-  assert.ok(
-    z
-      .object({ contextDependent: z.string().min(1) })
-      .safeParse(
-        metadata["actions/setup-node@v7"].inputs["package-manager-cache"]
-      ).success
-  );
+  const { contextDependent } =
+    metadata["actions/setup-node@v7"].inputs["package-manager-cache"];
+  assert.ok(contextDependent.includes("devEngines.packageManager"));
+  assert.match(contextDependent, /(?<!\.)\bpackageManager\b/u);
   const controls = `on: push
 env:
   DEPTH: &env_depth 1
@@ -81,6 +84,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: "01"
+      - uses: ./left-to-review
 `;
   await Promise.all([
     writeFile(path.join(directory, "00-empty.yaml"), ""),
@@ -118,6 +122,9 @@ jobs:
           fetch-depth: 0.9999999999999996
           sparse-checkout: null
           ssh-key: ""
+      - uses: actions/checkout@v7
+        with:
+          filter: ""
       - ? *uses_key
         : actions/checkout@v7
         ? *with_key
@@ -144,10 +151,23 @@ jobs:
     ref: z.string()
   });
   const diagnostics = z.array(diagnostic).parse(JSON.parse(invalid.stderr));
-  assert.equal(diagnostics.length, 11);
+  assert.equal(diagnostics.length, 12);
   const lines = failures.split("\n");
   /** @param {string} text - Unique text on a fixture line. */
   const lineOf = (text) => lines.findIndex((line) => line.includes(text)) + 1;
+  for (const result of [valid, invalid]) {
+    const reviews = z
+      .array(
+        location.extend({
+          kind: z.literal("local-action-review"),
+          ref: z.string()
+        })
+      )
+      .parse(JSON.parse(result.stdout));
+    assert.equal(reviews.length, 1);
+    assert.equal(reviews[0].ref, "./left-to-review");
+    assert.equal(reviews[0].line, lineOf("./left-to-review"));
+  }
   const byLine = new Map(diagnostics.map((entry) => [entry.line, entry]));
   const redundant = byLine.get(lineOf("CHECK-LATEST: &unused"));
   assert.ok(redundant !== undefined);
@@ -211,6 +231,7 @@ jobs:
   const scalarFindings = [
     [lineOf("fetch-depth: 0.9999999999999996"), "fetch-depth", "omit"],
     [lineOf("sparse-checkout: null"), "sparse-checkout", "omit"],
+    [lineOf('filter: ""'), "filter", "omit"],
     [lineOf('ssh-key: ""'), "ssh-key", "omit"],
     [lineOf("fetch-depth: 0x1"), "fetch-depth", "hand-edit"],
     [
@@ -285,14 +306,7 @@ jobs:
   await writeFile(path.join(directory, workflow), fixture);
   const result = await execa(
     "pnpm",
-    [
-      "--silent",
-      "run",
-      "check:workflow-action-defaults",
-      "--workflows",
-      directory,
-      "--json"
-    ],
+    [...workflowCheck, "--workflows", directory, "--json"],
     { cwd: fileURLToPath(repositoryRoot), reject: false }
   );
   assert.equal(result.exitCode, 0, result.stderr);
@@ -321,6 +335,104 @@ jobs:
     assert.equal(line, lines.findIndex((text) => text.includes(ref)) + 1);
     expected.delete(ref);
   }
+});
+
+await test("the workflow package check rounds exact G15 midpoints on both sides", async (t) => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "codex-workflow-checkout-")
+  );
+  t.after(async () => {
+    await rm(directory, { force: true, recursive: true });
+  });
+  const workflows = path.join(directory, ".github", "workflows");
+  const rules = path.join(directory, "rules");
+  const file = "check.yaml";
+  const ref = "./fixture-action";
+  const checkoutCommit = "3d3c42e5aac5ba805825da76410c181273ba90b1";
+  const args = [...workflowCheck, "--workflows", workflows];
+  const options = { cwd: fileURLToPath(repositoryRoot), reject: false };
+  await Promise.all([mkdir(workflows, { recursive: true }), mkdir(rules)]);
+  const workflow = `on: push
+jobs:
+  check:
+    steps:
+      - uses: actions/checkout@${checkoutCommit}
+        with:
+          ref: \${{ github.workflow_sha }}
+      - uses: ${ref}
+        with:
+          workflow-midpoint: 1000000000000005
+          metadata-midpoint: "1E+15"
+          odd-midpoint: 1000000000000015
+          different: "1000000000000005"
+      - uses: ${ref}
+        with:
+          workflow-midpoint: 1000000000000005
+`;
+  await Promise.all([
+    writeFile(
+      path.join(rules, "workflow-action-defaults.yaml"),
+      `actions/checkout@v7:
+  commit: ${checkoutCommit}
+  inputs: {}
+${ref}:
+  commit: null
+  inputs:
+    workflow-midpoint: { default: "1E+15" }
+    metadata-midpoint: { default: 1000000000000005 }
+    odd-midpoint: { default: "1.00000000000002E+15" }
+    different: { default: 1000000000000005 }
+`
+    ),
+    writeFile(path.join(workflows, file), workflow)
+  ]);
+  const listing = await execa("pnpm", [...args, "--list-metadata"], options);
+  assert.equal(listing.exitCode, 0, listing.stderr);
+  const entries = z
+    .record(z.string(), z.unknown())
+    .parse(JSON.parse(listing.stdout));
+  assert.ok(Object.hasOwn(entries, ref));
+  const result = await execa("pnpm", [...args, "--json"], options);
+  assert.equal(result.exitCode, 1, result.stderr);
+  const reviews = z
+    .array(
+      z.object({
+        file: z.literal(file),
+        kind: z.literal("local-action-review"),
+        line: z.number().int().positive(),
+        reason: z.literal("workspace"),
+        ref: z.literal(ref)
+      })
+    )
+    .parse(JSON.parse(result.stdout));
+  assert.equal(reviews.length, 1);
+  const lines = workflow.split("\n");
+  assert.equal(
+    reviews[0].line,
+    lines.findLastIndex((line) => line.includes(ref)) + 1
+  );
+  const findings = z
+    .array(
+      z.object({
+        file: z.literal(file),
+        input: z.string(),
+        kind: z.literal("omit"),
+        line: z.number().int().positive(),
+        ref: z.literal(ref)
+      })
+    )
+    .parse(JSON.parse(result.stderr));
+  const inputs = ["workflow-midpoint", "metadata-midpoint", "odd-midpoint"];
+  assert.equal(findings.length, inputs.length);
+  assert.deepEqual(
+    new Map(findings.map(({ input, line }) => [input, line])),
+    new Map(
+      inputs.map((input) => [
+        input,
+        lines.findIndex((line) => line.trimStart().startsWith(`${input}:`)) + 1
+      ])
+    )
+  );
 });
 
 const validIssueForm = `name: Bug report

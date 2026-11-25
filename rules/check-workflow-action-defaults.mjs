@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -90,11 +90,10 @@ const decimalNumber =
   /^[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/u;
 
 /**
- * @param {string} filename - YAML path on disk.
+ * @param {string} source - YAML document text.
  * @param {string} file - Relative display path.
  */
-const readYaml = (filename, file) => {
-  const source = readFileSync(filename, "utf-8");
+const parseYaml = (source, file) => {
   let reason = "invalid YAML syntax";
   try {
     const events = parseEvents(source, {});
@@ -537,7 +536,7 @@ const localReview = (file, ref, line, reason) => ({
  * @param {ReturnType<typeof indexDefaults>} defaults - Runner readings by approved ref and input name.
  * @param {string | null | undefined} checkoutCommit - Approved checkout revision.
  * @param {boolean} sameTree - The workflow and approval file are in the same checkout.
- * @returns {(ReturnType<typeof inputDiagnostic> | ReturnType<typeof localReview> | NonNullable<ReturnType<typeof readYaml>["error"]>)[]} Workflow findings.
+ * @returns {(ReturnType<typeof inputDiagnostic> | ReturnType<typeof localReview> | NonNullable<ReturnType<typeof parseYaml>["error"]>)[]} Workflow findings.
  */
 const validateWorkflowActionDefaults = (
   filename,
@@ -546,7 +545,7 @@ const validateWorkflowActionDefaults = (
   checkoutCommit,
   sameTree
 ) => {
-  const document = readYaml(filename, file);
+  const document = parseYaml(readFileSync(filename, "utf-8"), file);
   if (document.error !== undefined) {
     return [document.error];
   }
@@ -636,7 +635,7 @@ const validateWorkflowActionDefaults = (
 };
 
 const metadataFile = "rules/workflow-action-defaults.yaml";
-const workflowDirectory = path.join(root, ".github/workflows");
+const workflowPath = ".github/workflows";
 
 /**
  * @param {{column?: number, file: string, line: number, message: string}[]} findings - Findings to display.
@@ -653,13 +652,25 @@ const formatFindings = (findings) =>
 
 if (options.help === true) {
   process.stdout.write(
-    "Check workflow action inputs against approved defaults.\n\n--workflows <directory>  Scan a different workflow directory.\n--json                   Print structured findings.\n--list-metadata          Print approved action metadata as JSON.\n"
+    "Check workflow action inputs against approved defaults.\n\n--workflows <directory>  Scan a different directory. Standard .github/workflows directories use metadata from their own tree.\n--json                   Print structured findings.\n--list-metadata          Print approved action metadata as JSON.\n"
   );
 } else {
-  const metadataDocument = readYaml(
-    path.join(root, metadataFile),
-    metadataFile
-  );
+  const workflowDirectory = path.join(root, workflowPath);
+  const directory =
+    options.workflows === undefined && options["list-metadata"] === true
+      ? workflowDirectory
+      : realpathSync(options.workflows ?? workflowDirectory);
+  const candidateRoot = path.dirname(path.dirname(directory));
+  const sameTree =
+    directory === path.join(candidateRoot, workflowPath) &&
+    (options.workflows !== undefined || candidateRoot === path.resolve(root));
+  const metadataPath = path.join(sameTree ? candidateRoot : root, metadataFile);
+  const metadataSource =
+    metadataPath === path.join(root, metadataFile) ||
+    (existsSync(metadataPath) && realpathSync(metadataPath) === metadataPath)
+      ? readFileSync(metadataPath, "utf-8")
+      : "{}";
+  const metadataDocument = parseYaml(metadataSource, metadataFile);
   const metadata = metadataSchema.safeParse(metadataDocument.value);
   if (!metadata.success || metadataDocument.error !== undefined) {
     const error = metadataDocument.error ?? {
@@ -677,8 +688,6 @@ if (options.help === true) {
       indexSyntax(metadataDocument.events, metadataDocument.source),
       metadata.data
     );
-    const directory = options.workflows ?? workflowDirectory;
-    const sameTree = path.resolve(directory) === workflowDirectory;
     const checkoutCommit = metadata.data["actions/checkout@v7"]?.commit;
     const findings = readdirSync(directory, { withFileTypes: true })
       .filter((entry) => entry.isFile() && /\.ya?ml$/u.test(entry.name))
@@ -688,7 +697,7 @@ if (options.help === true) {
         validateWorkflowActionDefaults(
           path.join(directory, name),
           options.workflows === undefined
-            ? path.join(".github/workflows", name)
+            ? path.join(workflowPath, name)
             : name,
           defaults,
           checkoutCommit,
