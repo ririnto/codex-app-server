@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
+import { execa } from "execa";
 import { load as yamlParser } from "js-yaml";
 import { z } from "zod";
 
@@ -9,6 +14,564 @@ import { validateIssueForms } from "../release/check-issue-forms.mjs";
 import { validatePluginVersions } from "../release/check-plugin-version.mjs";
 
 const repositoryRoot = new URL("../", import.meta.url);
+const workflowCheck = ["--silent", "run", "check:workflow-action-defaults"];
+
+await test("the workflow package check distinguishes literals, anchors, and aliases", async (t) => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "codex-workflow-defaults-")
+  );
+  t.after(async () => {
+    await rm(directory, { force: true, recursive: true });
+  });
+  const workflow = "check.yaml";
+  const fixture = path.join(directory, workflow);
+  const args = [...workflowCheck, "--workflows", directory, "--json"];
+  const options = { cwd: fileURLToPath(repositoryRoot), reject: false };
+  const listing = await execa(
+    "pnpm",
+    [...workflowCheck, "--list-metadata"],
+    options
+  );
+  assert.equal(listing.exitCode, 0, listing.stderr);
+  const metadata = z
+    .object({
+      "actions/setup-node@v7": z.object({
+        inputs: z.object({
+          "package-manager-cache": z.object({
+            contextDependent: z.string().min(1)
+          })
+        })
+      })
+    })
+    .parse(JSON.parse(listing.stdout));
+  const { contextDependent } =
+    metadata["actions/setup-node@v7"].inputs["package-manager-cache"];
+  assert.ok(contextDependent.includes("devEngines.packageManager"));
+  assert.match(contextDependent, /(?<!\.)\bpackageManager\b/u);
+  const controls = `on: push
+env:
+  DEPTH: &env_depth 1
+  NESTED_DEPTH: &nested_depth 1
+  DIFFERENT_DEPTH: &different_depth 2
+  USES_KEY: &uses_key uses
+  WITH_KEY: &with_key with
+jobs:
+  check:
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          check-latest: true
+          PACKAGE-MANAGER-CACHE: true
+          node-version-file: package.json
+      - uses: actions/setup-node@v7
+        with:
+          check-latest: \${{ false }}
+      - uses: actions/setup-node@v7
+        with:
+          check-latest: true
+          CHECK-LATEST: false
+      - uses: actions/setup-node@v6
+        with:
+          check-latest: false
+      - uses: example/unreviewed@v1
+        with:
+          check-latest: false
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: null
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0.9999999999999995
+          filter: "null"
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: "01"
+      - uses: ./left-to-review
+`;
+  await Promise.all([
+    writeFile(path.join(directory, "00-empty.yaml"), ""),
+    writeFile(path.join(directory, "01-comments.yaml"), "# workflow notes\n"),
+    writeFile(path.join(directory, "02-no-jobs.yaml"), "name: Test\n"),
+    writeFile(
+      path.join(directory, "03-no-steps.yaml"),
+      "jobs: {check: {runs-on: ubuntu-latest}}\n"
+    ),
+    writeFile(fixture, controls)
+  ]);
+  const valid = await execa("pnpm", args, options);
+  assert.equal(valid.exitCode, 0, valid.stderr);
+  assert.equal(valid.stderr, "");
+  const failures = `${controls}      - uses: actions/setup-node@v7
+        with:
+          CHECK-LATEST: &unused false
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: *env_depth
+      - &checkout_step
+        uses: actions/checkout@v7
+        with: &checkout_inputs
+          fetch-depth: &depth 1
+      - uses: example/unreviewed@v1
+        with: *checkout_inputs
+      - uses: actions/checkout@v7
+        with: *checkout_inputs
+      - *checkout_step
+      - run: echo depth
+        env:
+          DEPTH: *depth
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0.9999999999999996
+          sparse-checkout: null
+          ssh-key: ""
+      - uses: actions/checkout@v7
+        with:
+          filter: ""
+      - ? *uses_key
+        : actions/checkout@v7
+        ? *with_key
+        :
+          fetch-depth: 0x1
+      - uses: actions/checkout@v7
+        with: &agreeing_inputs
+          fetch-depth: 1
+      - uses: actions/checkout@v7
+        with: *agreeing_inputs
+      - uses: actions/checkout@v7
+        with: &nested_inputs
+          fetch-depth: *nested_depth
+      - uses: actions/checkout@v7
+        with: *nested_inputs
+      - uses: actions/checkout@v7
+        with: &different_inputs
+          fetch-depth: *different_depth
+      - uses: actions/checkout@v7
+        with: *different_inputs
+  sequence_source:
+    steps: &shared_steps
+      - uses: actions/checkout@v7
+        with:
+          filter:
+  sequence_use:
+    steps: *shared_steps
+`;
+  await writeFile(fixture, failures);
+  const invalid = await execa("pnpm", args, options);
+  assert.equal(invalid.exitCode, 1, invalid.stderr);
+  const location = z.looseObject({
+    file: z.literal(workflow),
+    line: z.number().int().positive()
+  });
+  const diagnostic = location.extend({
+    input: z.string(),
+    kind: z.string(),
+    ref: z.string()
+  });
+  const diagnostics = z.array(diagnostic).parse(JSON.parse(invalid.stderr));
+  assert.equal(diagnostics.length, 16);
+  const lines = failures.split("\n");
+  /** @type {(text: string) => number} */
+  const lineOf = (text) => lines.findIndex((line) => line.includes(text)) + 1;
+  for (const result of [valid, invalid]) {
+    const reviews = z
+      .array(
+        location.extend({
+          kind: z.literal("local-action-review"),
+          ref: z.string()
+        })
+      )
+      .parse(JSON.parse(result.stdout));
+    assert.equal(reviews.length, 1);
+    assert.equal(reviews[0].ref, "./left-to-review");
+    assert.equal(reviews[0].line, lineOf("./left-to-review"));
+  }
+  const byLine = new Map(diagnostics.map((entry) => [entry.line, entry]));
+  const redundant = byLine.get(lineOf("CHECK-LATEST: &unused"));
+  assert.ok(redundant !== undefined);
+  assert.equal(redundant.kind, "omit");
+  assert.equal(redundant.ref, "actions/setup-node@v7");
+  assert.equal(redundant.input, "CHECK-LATEST");
+  assert.ok(
+    z.array(z.string()).parse(redundant.removedAnchors).includes("unused")
+  );
+  const alias = byLine.get(lineOf("fetch-depth: *env_depth"));
+  assert.ok(alias !== undefined);
+  assert.equal(alias.kind, "hand-edit");
+  assert.equal(alias.ref, "actions/checkout@v7");
+  assert.equal(alias.input, "fetch-depth");
+  const anchorLocation = z.looseObject({
+    definition: location,
+    name: z.string(),
+    uses: z.array(location)
+  });
+  const envDepth = z
+    .array(anchorLocation)
+    .parse(alias.anchors)
+    .find(({ name }) => name === "env_depth");
+  assert.ok(envDepth !== undefined);
+  assert.equal(envDepth.definition.line, lineOf("DEPTH: &env_depth"));
+  assert.deepEqual(
+    new Set(envDepth.uses.map(({ line }) => line)),
+    new Set([lineOf("fetch-depth: *env_depth")])
+  );
+  const shared = byLine.get(lineOf("fetch-depth: &depth"));
+  assert.ok(shared !== undefined);
+  assert.equal(shared.kind, "shared-definition");
+  assert.equal(shared.ref, "actions/checkout@v7");
+  assert.equal(shared.input, "fetch-depth");
+  assert.deepEqual(
+    new Set(z.array(z.string()).parse(shared.actions)),
+    new Set(["actions/checkout@v7", "example/unreviewed@v1"])
+  );
+  const sharedAnchors = z.array(anchorLocation).parse(shared.anchors);
+  assert.deepEqual(
+    new Set(sharedAnchors.map(({ name }) => name)),
+    new Set(["checkout_step", "checkout_inputs", "depth"])
+  );
+  const scalar = sharedAnchors.find(({ name }) => name === "depth");
+  assert.ok(scalar !== undefined);
+  assert.equal(scalar.definition.line, lineOf("fetch-depth: &depth"));
+  assert.deepEqual(
+    new Set(scalar.uses.map(({ line }) => line)),
+    new Set([lineOf("DEPTH: *depth")])
+  );
+  const sharedMappingUse =
+    lines.findLastIndex((line) => line.includes("with: *checkout_inputs")) + 1;
+  for (const line of [sharedMappingUse, lineOf("- *checkout_step")]) {
+    const detached = byLine.get(line);
+    assert.ok(detached !== undefined);
+    assert.equal(detached.kind, "detach");
+    assert.equal(detached.ref, "actions/checkout@v7");
+    assert.equal(detached.input, "fetch-depth");
+  }
+  const agreeingDefinition = lineOf("with: &agreeing_inputs");
+  const agreeingUse = lineOf("with: *agreeing_inputs");
+  const nestedValue = lineOf("fetch-depth: *nested_depth");
+  const nestedUse = lineOf("with: *nested_inputs");
+  for (const { line, kind } of [
+    { kind: "hand-edit", line: agreeingDefinition + 1 },
+    { kind: "detach", line: agreeingUse },
+    { kind: "hand-edit", line: nestedValue },
+    { kind: "hand-edit", line: nestedUse }
+  ]) {
+    const finding = byLine.get(line);
+    assert.equal(finding?.kind, kind);
+    assert.equal(finding?.input, "fetch-depth");
+    assert.equal(finding?.ref, "actions/checkout@v7");
+  }
+  const nestedAnchors = z
+    .array(anchorLocation)
+    .parse(byLine.get(nestedUse)?.anchors);
+  assert.deepEqual(
+    new Map(
+      nestedAnchors.map(({ name, definition, uses }) => [
+        name,
+        [definition.line, new Set(uses.map(({ line }) => line))]
+      ])
+    ),
+    new Map([
+      [
+        "nested_depth",
+        [lineOf("NESTED_DEPTH: &nested_depth"), new Set([nestedValue])]
+      ],
+      ["nested_inputs", [lineOf("with: &nested_inputs"), new Set([nestedUse])]]
+    ])
+  );
+  assert.ok(!byLine.has(lineOf("fetch-depth: *different_depth")));
+  assert.ok(!byLine.has(lineOf("with: *different_inputs")));
+  /** @type {[number, string, string][]} */
+  const scalarFindings = [
+    [lineOf("fetch-depth: 0.9999999999999996"), "fetch-depth", "omit"],
+    [lineOf("sparse-checkout: null"), "sparse-checkout", "omit"],
+    [lineOf('filter: ""'), "filter", "omit"],
+    [lineOf('ssh-key: ""'), "ssh-key", "omit"],
+    [lineOf("fetch-depth: 0x1"), "fetch-depth", "hand-edit"],
+    [
+      lines.findIndex((line) => line.trim() === "filter:") + 1,
+      "filter",
+      "hand-edit"
+    ],
+    [lineOf("steps: *shared_steps"), "filter", "detach"]
+  ];
+  for (const [line, input, kind] of scalarFindings) {
+    const finding = byLine.get(line);
+    assert.equal(finding?.ref, "actions/checkout@v7");
+    assert.equal(finding?.kind, kind);
+    assert.equal(finding?.input, input);
+  }
+  await writeFile(
+    fixture,
+    "name: workflow-source-sentinel\njobs: *alias-source-sentinel\n"
+  );
+  const malformed = await execa("pnpm", args, options);
+  assert.equal(malformed.exitCode, 1, malformed.stderr);
+  const parseErrors = z
+    .array(
+      location.extend({
+        column: z.number().int().positive(),
+        kind: z.literal("parse")
+      })
+    )
+    .parse(JSON.parse(malformed.stderr));
+  assert.equal(parseErrors.length, 1);
+  assert.equal(parseErrors[0].line, 2);
+  assert.ok(!malformed.stderr.includes("source-sentinel"));
+  assert.ok(!malformed.stderr.includes(directory));
+});
+
+await test("the workflow package check leaves unverified local actions to review", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-local-actions-"));
+  t.after(async () => {
+    await rm(directory, { force: true, recursive: true });
+  });
+  const workflow = "local.yaml";
+  const checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1";
+  const fixture = `on: push
+jobs:
+  local:
+    steps:
+      - uses: ${checkout}
+        with:
+          ref: \${{ github.workflow_sha }}
+      - uses: ./unapproved
+      - uses: ./after-action
+  replaces_workspace:
+    steps:
+      - uses: ${checkout}
+        with:
+          REF: main
+          repository: other/repo
+      - uses: ./after-checkout
+        with:
+          fetch-depth: 1
+  script:
+    steps:
+      - uses: ${checkout}
+        with:
+          ref: \${{ github.workflow_sha }}
+      - run: echo hello
+      - uses: ./after-script
+  empty_workspace:
+    steps:
+      - uses: ./before-checkout
+`;
+  await writeFile(path.join(directory, workflow), fixture);
+  const result = await execa(
+    "pnpm",
+    [...workflowCheck, "--workflows", directory, "--json"],
+    { cwd: fileURLToPath(repositoryRoot), reject: false }
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const reviews = z
+    .array(
+      z.looseObject({
+        file: z.literal(workflow),
+        kind: z.literal("local-action-review"),
+        line: z.number().int().positive(),
+        reason: z.string(),
+        ref: z.string()
+      })
+    )
+    .parse(JSON.parse(result.stdout));
+  const lines = fixture.split("\n");
+  const expected = new Map([
+    ["./unapproved", "metadata"],
+    ["./after-action", "workspace"],
+    ["./after-checkout", "workspace"],
+    ["./after-script", "workspace"],
+    ["./before-checkout", "workspace"]
+  ]);
+  assert.equal(reviews.length, expected.size);
+  for (const { line, reason, ref } of reviews) {
+    assert.equal(reason, expected.get(ref));
+    assert.equal(line, lines.findIndex((text) => text.includes(ref)) + 1);
+    expected.delete(ref);
+  }
+});
+
+await test("the workflow package check rounds exact G15 midpoints on both sides", async (t) => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "codex-workflow-checkout-")
+  );
+  t.after(async () => {
+    await rm(directory, { force: true, recursive: true });
+  });
+  const workflows = path.join(directory, ".github", "workflows");
+  const rules = path.join(directory, "rules");
+  const file = "check.yaml";
+  const ref = "./fixture-action";
+  const checkoutCommit = "3d3c42e5aac5ba805825da76410c181273ba90b1";
+  const args = [...workflowCheck, "--workflows", workflows];
+  const options = { cwd: fileURLToPath(repositoryRoot), reject: false };
+  await Promise.all([mkdir(workflows, { recursive: true }), mkdir(rules)]);
+  const workflow = `on: push
+jobs:
+  check:
+    steps:
+      - uses: actions/checkout@${checkoutCommit}
+        with:
+          ref: \${{ github.workflow_sha }}
+      - uses: ${ref}
+        with:
+          workflow-midpoint: 1000000000000005
+          metadata-midpoint: "1E+15"
+          odd-midpoint: 1000000000000015
+          different: "1000000000000005"
+      - uses: ${ref}
+        with:
+          workflow-midpoint: 1000000000000005
+`;
+  await Promise.all([
+    writeFile(
+      path.join(rules, "workflow-action-defaults.yaml"),
+      `actions/checkout@v7:
+  commit: ${checkoutCommit}
+  inputs: {}
+${ref}:
+  commit: null
+  inputs:
+    workflow-midpoint: { default: "1E+15" }
+    metadata-midpoint: { default: 1000000000000005 }
+    odd-midpoint: { default: "1.00000000000002E+15" }
+    different: { default: 1000000000000005 }
+`
+    ),
+    writeFile(path.join(workflows, file), workflow)
+  ]);
+  const listing = await execa("pnpm", [...args, "--list-metadata"], options);
+  assert.equal(listing.exitCode, 0, listing.stderr);
+  const entries = z
+    .record(z.string(), z.unknown())
+    .parse(JSON.parse(listing.stdout));
+  assert.ok(Object.hasOwn(entries, ref));
+  const result = await execa("pnpm", [...args, "--json"], options);
+  assert.equal(result.exitCode, 1, result.stderr);
+  const reviews = z
+    .array(
+      z.object({
+        file: z.literal(file),
+        kind: z.literal("local-action-review"),
+        line: z.number().int().positive(),
+        reason: z.literal("workspace"),
+        ref: z.literal(ref)
+      })
+    )
+    .parse(JSON.parse(result.stdout));
+  assert.equal(reviews.length, 1);
+  const lines = workflow.split("\n");
+  assert.equal(
+    reviews[0].line,
+    lines.findLastIndex((line) => line.includes(ref)) + 1
+  );
+  const findings = z
+    .array(
+      z.object({
+        file: z.literal(file),
+        input: z.string(),
+        kind: z.literal("omit"),
+        line: z.number().int().positive(),
+        ref: z.literal(ref)
+      })
+    )
+    .parse(JSON.parse(result.stderr));
+  const inputs = ["workflow-midpoint", "metadata-midpoint", "odd-midpoint"];
+  assert.equal(findings.length, inputs.length);
+  assert.deepEqual(
+    new Map(findings.map(({ input, line }) => [input, line])),
+    new Map(
+      inputs.map((input) => [
+        input,
+        lines.findIndex((line) => line.trimStart().startsWith(`${input}:`)) + 1
+      ])
+    )
+  );
+});
+
+await test("the workflow package check compares shared inputs across distinct approved references", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-shared-inputs-"));
+  t.after(async () => {
+    await rm(directory, { force: true, recursive: true });
+  });
+  const workflows = path.join(directory, ".github", "workflows");
+  const rules = path.join(directory, "rules");
+  const first = "example/first@v1";
+  const second = "example/second@v1";
+  await Promise.all([mkdir(workflows, { recursive: true }), mkdir(rules)]);
+  await Promise.all([
+    writeFile(
+      path.join(rules, "workflow-action-defaults.yaml"),
+      `${first}:
+  commit: "1111111111111111111111111111111111111111"
+  inputs:
+    mode: { default: fast }
+    format: { default: text }
+${second}:
+  commit: "2222222222222222222222222222222222222222"
+  inputs:
+    mode: { default: fast }
+    format: { default: json }
+`
+    ),
+    ...[
+      { file: "agree.yaml", input: "mode", value: "fast" },
+      { file: "differ.yaml", input: "format", value: "text" }
+    ].map(async ({ file, input, value }) => {
+      await writeFile(
+        path.join(workflows, file),
+        `on: push
+jobs:
+  check:
+    steps:
+      - uses: ${first}
+        with: &shared
+          ${input}: ${value}
+      - uses: ${second}
+        with: *shared
+`
+      );
+    })
+  ]);
+  const result = await execa(
+    "pnpm",
+    [...workflowCheck, "--workflows", workflows, "--json"],
+    { cwd: fileURLToPath(repositoryRoot), reject: false }
+  );
+  assert.equal(result.exitCode, 1, result.stderr);
+  const findings = z
+    .array(
+      z.object({
+        actions: z.array(z.string()),
+        file: z.string(),
+        input: z.string(),
+        kind: z.string(),
+        line: z.number().int().positive(),
+        ref: z.string()
+      })
+    )
+    .parse(JSON.parse(result.stderr));
+  assert.equal(findings.length, 3);
+  assert.deepEqual(
+    new Set(
+      findings.map(({ file, input, kind, line, ref }) => [
+        file,
+        input,
+        kind,
+        line,
+        ref
+      ])
+    ),
+    new Set([
+      ["agree.yaml", "mode", "hand-edit", 7, first],
+      ["agree.yaml", "mode", "detach", 9, second],
+      ["differ.yaml", "format", "shared-definition", 7, first]
+    ])
+  );
+  assert.deepEqual(
+    new Set(findings.find(({ file }) => file === "differ.yaml")?.actions),
+    new Set([first, second])
+  );
+});
+
 const validIssueForm = `name: Bug report
 description: Report a reproducible defect.
 body:
