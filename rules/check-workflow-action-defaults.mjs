@@ -291,8 +291,8 @@ const roundSignificand = (magnitude) => {
 };
 
 /**
- * @param {string} value - Decoded YAML number.
- * @param {boolean} integer - The YAML tag is an integer.
+ * The boolean identifies the YAML tag, so an integral-valued float stays a float.
+ * @type {(value: string, integer: boolean) => string | null}
  */
 const readRunnerNumber = (value, integer) => {
   if (integer && /^0[ox]/u.test(value)) {
@@ -510,11 +510,18 @@ const inputDiagnostic = (file, input, name, ref, actions, defaultsAgree) => {
 
 /**
  * @param {string} file - Relative workflow path for the review report.
- * @param {string} ref - Starts with `./` and keeps the spelling from `uses`.
  * @param {number} line - Line of the reference or its alias use.
  * @param {"workspace" | "metadata"} reason - Use `workspace` when both prerequisites are missing.
  */
-const localReview = (file, ref, line, reason) => ({
+const localReview = (
+  file,
+  /**
+   * @type {string}
+   */
+  ref,
+  line,
+  reason
+) => ({
   file,
   kind: "local-action-review",
   line,

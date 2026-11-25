@@ -51,6 +51,8 @@ await test("the workflow package check distinguishes literals, anchors, and alia
   const controls = `on: push
 env:
   DEPTH: &env_depth 1
+  NESTED_DEPTH: &nested_depth 1
+  DIFFERENT_DEPTH: &different_depth 2
   USES_KEY: &uses_key uses
   WITH_KEY: &with_key with
 jobs:
@@ -130,6 +132,21 @@ jobs:
         ? *with_key
         :
           fetch-depth: 0x1
+      - uses: actions/checkout@v7
+        with: &agreeing_inputs
+          fetch-depth: 1
+      - uses: actions/checkout@v7
+        with: *agreeing_inputs
+      - uses: actions/checkout@v7
+        with: &nested_inputs
+          fetch-depth: *nested_depth
+      - uses: actions/checkout@v7
+        with: *nested_inputs
+      - uses: actions/checkout@v7
+        with: &different_inputs
+          fetch-depth: *different_depth
+      - uses: actions/checkout@v7
+        with: *different_inputs
   sequence_source:
     steps: &shared_steps
       - uses: actions/checkout@v7
@@ -151,7 +168,7 @@ jobs:
     ref: z.string()
   });
   const diagnostics = z.array(diagnostic).parse(JSON.parse(invalid.stderr));
-  assert.equal(diagnostics.length, 12);
+  assert.equal(diagnostics.length, 16);
   const lines = failures.split("\n");
   /** @param {string} text - Unique text on a fixture line. */
   const lineOf = (text) => lines.findIndex((line) => line.includes(text)) + 1;
@@ -227,6 +244,41 @@ jobs:
     assert.equal(detached.ref, "actions/checkout@v7");
     assert.equal(detached.input, "fetch-depth");
   }
+  const agreeingDefinition = lineOf("with: &agreeing_inputs");
+  const agreeingUse = lineOf("with: *agreeing_inputs");
+  const nestedValue = lineOf("fetch-depth: *nested_depth");
+  const nestedUse = lineOf("with: *nested_inputs");
+  for (const { line, kind } of [
+    { kind: "hand-edit", line: agreeingDefinition + 1 },
+    { kind: "detach", line: agreeingUse },
+    { kind: "hand-edit", line: nestedValue },
+    { kind: "hand-edit", line: nestedUse }
+  ]) {
+    const finding = byLine.get(line);
+    assert.equal(finding?.kind, kind);
+    assert.equal(finding?.input, "fetch-depth");
+    assert.equal(finding?.ref, "actions/checkout@v7");
+  }
+  const nestedAnchors = z
+    .array(anchorLocation)
+    .parse(byLine.get(nestedUse)?.anchors);
+  assert.deepEqual(
+    new Map(
+      nestedAnchors.map(({ name, definition, uses }) => [
+        name,
+        [definition.line, new Set(uses.map(({ line }) => line))]
+      ])
+    ),
+    new Map([
+      [
+        "nested_depth",
+        [lineOf("NESTED_DEPTH: &nested_depth"), new Set([nestedValue])]
+      ],
+      ["nested_inputs", [lineOf("with: &nested_inputs"), new Set([nestedUse])]]
+    ])
+  );
+  assert.ok(!byLine.has(lineOf("fetch-depth: *different_depth")));
+  assert.ok(!byLine.has(lineOf("with: *different_inputs")));
   /** @type {[number, string, string][]} */
   const scalarFindings = [
     [lineOf("fetch-depth: 0.9999999999999996"), "fetch-depth", "omit"],
