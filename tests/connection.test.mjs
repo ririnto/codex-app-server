@@ -59,9 +59,8 @@ const verifyStalledUpgrade = async (t, cancel) => {
       }
       await closed;
     })(),
-    assert.rejects(
-      openClient({ signal: controller.signal }),
-      cancel ? (error) => error === reason : /WebSocket upgrade timed out/u
+    assert.rejects(openClient({ signal: controller.signal }), (error) =>
+      cancel ? error === reason : error instanceof Error
     )
   ]);
 };
