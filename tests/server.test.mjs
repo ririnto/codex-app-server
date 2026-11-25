@@ -517,15 +517,16 @@ await test("rejects non-positive page and trailing counts before opening a daemo
   );
 });
 
-await test("waited sends return terminal status and diagnostics without commentary", async (t) => {
+await test("failed and interrupted waited sends return no final message", async (t) => {
   const diagnostic = {
     codexErrorInfo: "usageLimitExceeded",
     message: "Fixture diagnostic"
   };
   const { client } = await fixture(t, ({ message, reply, ws }) => {
     if (message.method === "turn/start") {
-      const status = turnInput.parse(message.params).input[0]?.text;
-      const id = `fixture-${status}-turn`;
+      const [status, phase] =
+        turnInput.parse(message.params).input[0]?.text.split(" ") ?? [];
+      const id = `fixture-${status}-${phase}-turn`;
       for (const note of [
         {
           method: "turn/completed",
@@ -535,8 +536,8 @@ await test("waited sends return terminal status and diagnostics without commenta
           method: "item/completed",
           params: {
             item: {
-              phase: "commentary",
-              text: "Fixture progress",
+              phase,
+              text: "Fixture agent message",
               type: "agentMessage"
             },
             turnId: id
@@ -561,19 +562,23 @@ await test("waited sends return terminal status and diagnostics without commenta
     }
   });
   await Promise.all(
-    ["failed", "interrupted"].map(async (status) => {
-      const result = await call(client, "codex_send", {
-        text: status,
-        thread_id: `fixture-${status}`,
-        wait_seconds: 2
-      });
-      assert.deepEqual(result.value, {
-        ...(status === "failed" ? { error: diagnostic } : {}),
-        finalMessage: null,
-        status,
-        turnId: `fixture-${status}-turn`
-      });
-    })
+    ["failed", "interrupted"].flatMap((status) =>
+      ["commentary", "final_answer"].map(async (phase) => {
+        await t.test(`${status} after ${phase}`, async () => {
+          const result = await call(client, "codex_send", {
+            text: `${status} ${phase}`,
+            thread_id: `fixture-${status}-${phase}`,
+            wait_seconds: 2
+          });
+          assert.deepEqual(result.value, {
+            ...(status === "failed" ? { error: diagnostic } : {}),
+            finalMessage: null,
+            status,
+            turnId: `fixture-${status}-${phase}-turn`
+          });
+        });
+      })
+    )
   );
 });
 
