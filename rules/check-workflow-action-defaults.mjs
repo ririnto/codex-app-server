@@ -90,7 +90,7 @@ const decimalNumber =
   /^[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/u;
 
 /**
- * @param {string} source - YAML document text.
+ * @param {string} source - Original text, with line breaks intact for diagnostics.
  * @param {string} file - Relative display path.
  */
 const parseYaml = (source, file) => {
@@ -187,9 +187,9 @@ const indexSyntax = (events, source) => {
 };
 
 /**
- * @param {ReturnType<typeof indexSyntax>["locations"]} locations - YAML node locations and anchor links.
+ * @param {ReturnType<typeof indexSyntax>["locations"]} locations - Index from the same document as the parent node.
  * @param {YamlNode | undefined} node - Resolved parent node.
- * @param {number | string} segment - Mapping key or sequence index.
+ * @param {number | string} segment - Use a string for a mapping key, even when it looks numeric.
  */
 const childAt = (locations, node, segment) => {
   if (node?.kind === "mapping") {
@@ -212,10 +212,7 @@ const childAt = (locations, node, segment) => {
   return { key: null, value: null };
 };
 
-/**
- * @param {ReturnType<typeof indexSyntax>} syntax - YAML locations and anchor links.
- * @param {(number | string)[]} segments - Mapping keys and sequence indexes leading to a node.
- */
+/** @type {(syntax: ReturnType<typeof indexSyntax>, segments: (number | string)[]) => ReturnType<typeof childAt>[]} */
 const traceNode = ({ locations, rootNode }, segments) => {
   let current = rootNode === null ? null : locations.get(rootNode);
   /** @type {ReturnType<typeof childAt>[]} */
@@ -313,9 +310,7 @@ const readRunnerNumber = (value, integer) => {
   return decimalNumber.test(value) ? formatRunnerNumber(Number(value)) : null;
 };
 
-/**
- * @param {number} value - Double from a GitHub Actions number token.
- */
+/** @type {(value: number) => string} */
 const formatRunnerNumber = (value) => {
   if (Object.is(value, -0)) {
     return "-0";
@@ -410,9 +405,7 @@ const indexDefaults = (syntax, metadata) =>
     ])
   );
 
-/**
- * @param {unknown} event - Workflow trigger configuration.
- */
+/** @type {(event: unknown) => boolean} */
 const hasCaller = (event) => {
   const parsed = triggers.safeParse(event);
   if (!parsed.success) {
@@ -446,7 +439,7 @@ const checksOutWorkflow = (step, checkoutCommit) => {
 
 /**
  * @param {string} file - Relative workflow path for diagnostics.
- * @param {ReturnType<typeof inspectInput>} input - The syntax at the input and its anchor path.
+ * @param {ReturnType<typeof inspectInput>} input - Include the original alias use so the finding can point to it.
  * @param {string} name - Action input name as spelled in the workflow.
  * @param {string} ref - Exact action reference.
  * @param {string[]} actions - Actions sharing the input mapping.
@@ -517,9 +510,9 @@ const inputDiagnostic = (file, input, name, ref, actions, defaultsAgree) => {
 
 /**
  * @param {string} file - Relative workflow path for the review report.
- * @param {string} ref - Local action reference.
+ * @param {string} ref - Starts with `./` and keeps the spelling from `uses`.
  * @param {number} line - Line of the reference or its alias use.
- * @param {"workspace" | "metadata"} reason - Missing prerequisite for comparison.
+ * @param {"workspace" | "metadata"} reason - Use `workspace` when both prerequisites are missing.
  */
 const localReview = (file, ref, line, reason) => ({
   file,
@@ -531,12 +524,12 @@ const localReview = (file, ref, line, reason) => ({
 });
 
 /**
- * @param {string} filename - Workflow path on disk.
+ * @param {string} filename - Can be absolute because diagnostics use `file`.
  * @param {string} file - Relative workflow path for diagnostics.
- * @param {ReturnType<typeof indexDefaults>} defaults - Runner readings by approved ref and input name.
+ * @param {ReturnType<typeof indexDefaults>} defaults - Keys use exact action references and lowercase input names.
  * @param {string | null | undefined} checkoutCommit - Approved checkout revision.
  * @param {boolean} sameTree - The workflow and approval file are in the same checkout.
- * @returns {(ReturnType<typeof inputDiagnostic> | ReturnType<typeof localReview> | NonNullable<ReturnType<typeof parseYaml>["error"]>)[]} Workflow findings.
+ * @returns {(ReturnType<typeof inputDiagnostic> | ReturnType<typeof localReview> | NonNullable<ReturnType<typeof parseYaml>["error"]>)[]} Local-action reviews are included for reporting without failing the scan.
  */
 const validateWorkflowActionDefaults = (
   filename,
@@ -637,9 +630,7 @@ const validateWorkflowActionDefaults = (
 const metadataFile = "rules/workflow-action-defaults.yaml";
 const workflowPath = ".github/workflows";
 
-/**
- * @param {{column?: number, file: string, line: number, message: string}[]} findings - Findings to display.
- */
+/** @type {(findings: {column?: number, file: string, line: number, message: string}[]) => string} */
 const formatFindings = (findings) =>
   options.json === true
     ? JSON.stringify(findings)
