@@ -45,9 +45,9 @@ const verifyStalledUpgrade = async (t, cancel) => {
   const reason = new Error("Caller cancelled the connection");
   await Promise.all([
     (async () => {
-      /** @type {unknown[]} */
-      const upgrade = await once(server, "upgrade", { signal: t.signal });
-      const [, socket] = upgrade;
+      const [, socket] =
+        /** @type {unknown[]} */
+        (await once(server, "upgrade", { signal: t.signal }));
       assert.ok(socket instanceof Socket);
       const closed = once(socket, "close", { signal: t.signal });
       socket.once("end", () => {
