@@ -89,11 +89,16 @@ const parseReasons = new Set([
 const decimalNumber =
   /^[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/u;
 
-/**
- * @param {string} source - Original text, with line breaks intact for diagnostics.
- * @param {string} file - Relative display path.
- */
-const parseYaml = (source, file) => {
+const parseYaml = (
+  /**
+   * @type {string}
+   */
+  source,
+  /**
+   * @type {string}
+   */
+  file
+) => {
   let reason = "invalid YAML syntax";
   try {
     const events = parseEvents(source, {});
@@ -146,9 +151,14 @@ const parseYaml = (source, file) => {
 
 /**
  * @param {ReturnType<typeof parseEvents>} events - Events in YAML source order.
- * @param {string} source - Original YAML used for source locations.
  */
-const indexSyntax = (events, source) => {
+const indexSyntax = (
+  events,
+  /**
+   * @type {string}
+   */
+  source
+) => {
   const documents = eventsToAst(events, { schema: CORE_SCHEMA, source });
   const nodes = events.filter((event) => "anchorStart" in event).values();
   const breaks = source.matchAll(/\r\n|\r|\n/gu);
@@ -290,21 +300,19 @@ const roundSignificand = (magnitude) => {
   };
 };
 
-/**
- * The boolean identifies the YAML tag, so an integral-valued float stays a float.
- * @type {(value: string, integer: boolean) => string | null}
- */
-const readRunnerNumber = (value, integer) => {
-  if (integer && /^0[ox]/u.test(value)) {
+/** @type {(value: string, tag: "tag:yaml.org,2002:int" | "tag:yaml.org,2002:float") => string | null} */
+const readRunnerNumber = (value, tag) => {
+  const isYamlIntegerTag = tag === "tag:yaml.org,2002:int";
+  if (isYamlIntegerTag && /^0[ox]/u.test(value)) {
     const whole = Number(value);
     return whole < 2 ** 32
       ? String(whole >= 2 ** 31 ? whole - 2 ** 32 : whole)
       : null;
   }
-  if (!integer && /^[-+]?\.(?:inf|Inf|INF)$/u.test(value)) {
+  if (!isYamlIntegerTag && /^[-+]?\.(?:inf|Inf|INF)$/u.test(value)) {
     return value.startsWith("-") ? "-Infinity" : "Infinity";
   }
-  if (!integer && /^\.(?:nan|NaN|NAN)$/u.test(value)) {
+  if (!isYamlIntegerTag && /^\.(?:nan|NaN|NAN)$/u.test(value)) {
     return "NaN";
   }
   return decimalNumber.test(value) ? formatRunnerNumber(Number(value)) : null;
@@ -373,7 +381,7 @@ const readRunnerScalar = (node) => {
     return value.toLowerCase();
   }
   if (tag === "tag:yaml.org,2002:int" || tag === "tag:yaml.org,2002:float") {
-    return readRunnerNumber(value, tag === "tag:yaml.org,2002:int");
+    return readRunnerNumber(value, tag);
   }
   return null;
 };
@@ -511,7 +519,6 @@ const inputDiagnostic = (file, input, name, ref, actions, defaultsAgree) => {
 /**
  * @param {string} file - Relative workflow path for the review report.
  * @param {number} line - Line of the reference or its alias use.
- * @param {"workspace" | "metadata"} reason - Use `workspace` when both prerequisites are missing.
  */
 const localReview = (
   file,
@@ -520,6 +527,9 @@ const localReview = (
    */
   ref,
   line,
+  /**
+   * @type {"workspace" | "metadata"}
+   */
   reason
 ) => ({
   file,
@@ -536,7 +546,6 @@ const localReview = (
  * @param {ReturnType<typeof indexDefaults>} defaults - Keys use exact action references and lowercase input names.
  * @param {string | null | undefined} checkoutCommit - Approved checkout revision.
  * @param {boolean} sameTree - The workflow and approval file are in the same checkout.
- * @returns {(ReturnType<typeof inputDiagnostic> | ReturnType<typeof localReview> | NonNullable<ReturnType<typeof parseYaml>["error"]>)[]} Local-action reviews are included for reporting without failing the scan.
  */
 const validateWorkflowActionDefaults = (
   filename,
@@ -631,7 +640,9 @@ const validateWorkflowActionDefaults = (
       });
     }
   );
-  return [...diagnostics, ...reviews];
+  /** @type {(ReturnType<typeof inputDiagnostic> | ReturnType<typeof localReview> | NonNullable<ReturnType<typeof parseYaml>["error"]>)[]} */
+  const findings = [...diagnostics, ...reviews];
+  return findings;
 };
 
 const metadataFile = "rules/workflow-action-defaults.yaml";

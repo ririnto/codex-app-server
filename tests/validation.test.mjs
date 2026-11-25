@@ -170,7 +170,7 @@ jobs:
   const diagnostics = z.array(diagnostic).parse(JSON.parse(invalid.stderr));
   assert.equal(diagnostics.length, 16);
   const lines = failures.split("\n");
-  /** @param {string} text - Unique text on a fixture line. */
+  /** @type {(text: string) => number} */
   const lineOf = (text) => lines.findIndex((line) => line.includes(text)) + 1;
   for (const result of [valid, invalid]) {
     const reviews = z
@@ -484,6 +484,91 @@ ${ref}:
         lines.findIndex((line) => line.trimStart().startsWith(`${input}:`)) + 1
       ])
     )
+  );
+});
+
+await test("the workflow package check compares shared inputs across distinct approved references", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "codex-shared-inputs-"));
+  t.after(async () => {
+    await rm(directory, { force: true, recursive: true });
+  });
+  const workflows = path.join(directory, ".github", "workflows");
+  const rules = path.join(directory, "rules");
+  const first = "example/first@v1";
+  const second = "example/second@v1";
+  await Promise.all([mkdir(workflows, { recursive: true }), mkdir(rules)]);
+  await Promise.all([
+    writeFile(
+      path.join(rules, "workflow-action-defaults.yaml"),
+      `${first}:
+  commit: "1111111111111111111111111111111111111111"
+  inputs:
+    mode: { default: fast }
+    format: { default: text }
+${second}:
+  commit: "2222222222222222222222222222222222222222"
+  inputs:
+    mode: { default: fast }
+    format: { default: json }
+`
+    ),
+    ...[
+      { file: "agree.yaml", input: "mode", value: "fast" },
+      { file: "differ.yaml", input: "format", value: "text" }
+    ].map(async ({ file, input, value }) => {
+      await writeFile(
+        path.join(workflows, file),
+        `on: push
+jobs:
+  check:
+    steps:
+      - uses: ${first}
+        with: &shared
+          ${input}: ${value}
+      - uses: ${second}
+        with: *shared
+`
+      );
+    })
+  ]);
+  const result = await execa(
+    "pnpm",
+    [...workflowCheck, "--workflows", workflows, "--json"],
+    { cwd: fileURLToPath(repositoryRoot), reject: false }
+  );
+  assert.equal(result.exitCode, 1, result.stderr);
+  const findings = z
+    .array(
+      z.object({
+        actions: z.array(z.string()),
+        file: z.string(),
+        input: z.string(),
+        kind: z.string(),
+        line: z.number().int().positive(),
+        ref: z.string()
+      })
+    )
+    .parse(JSON.parse(result.stderr));
+  assert.equal(findings.length, 3);
+  assert.deepEqual(
+    new Set(
+      findings.map(({ file, input, kind, line, ref }) => [
+        file,
+        input,
+        kind,
+        line,
+        ref
+      ])
+    ),
+    new Set([
+      ["agree.yaml", "mode", "hand-edit", 7, first],
+      ["agree.yaml", "mode", "detach", 9, second],
+      ["differ.yaml", "format", "shared-definition", 7, first]
+    ])
+  );
+  assert.deepEqual(
+    new Set(findings.find(({ file }) => file === "differ.yaml")?.actions),
+    new Set([first, second])
   );
 });
 
