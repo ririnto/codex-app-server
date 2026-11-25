@@ -1,0 +1,51 @@
+# Inputs are approved from action.yml at each recorded commit.
+# Context-dependent defaults stay excluded even when the metadata declares a literal.
+actions/checkout@v7:
+  commit: 3d3c42e5aac5ba805825da76410c181273ba90b1
+  inputs:
+    allow-unsafe-pr-checkout: { default: "false" }
+    clean: { default: "true" }
+    fetch-depth: { default: "1" }
+    fetch-tags: { default: "false" }
+    filter: {}
+    github-server-url: { contextDependent: true }
+    lfs: { default: "false" }
+    path: {}
+    persist-credentials: { default: "true" }
+    ref: { contextDependent: true }
+    repository: { contextDependent: true }
+    set-safe-directory: { default: "true" }
+    show-progress: { default: "true" }
+    sparse-checkout: {}
+    sparse-checkout-cone-mode: { default: "true" }
+    ssh-key: {}
+    ssh-known-hosts: {}
+    ssh-strict: { default: "true" }
+    ssh-user: { default: git }
+    submodules: { default: "false" }
+    token: { contextDependent: true }
+actions/setup-node@v7:
+  commit: 949feb2413d6458794dcd2491c4babbbce0c15c1
+  inputs:
+    architecture: { contextDependent: true }
+    cache: {}
+    cache-dependency-path: {}
+    check-latest: { default: "false" }
+    mirror: {}
+    mirror-token: {}
+    node-version: {}
+    node-version-file: {}
+    package-manager-cache: { contextDependent: true, default: "true" }
+    registry-url: {}
+    scope: { contextDependent: true }
+    token: { contextDependent: true }
+pnpm/action-setup@v6:
+  commit: 73e46992e05b19abd31f2f3c20e0e7370d762115
+  inputs:
+    cache: { default: "false" }
+    cache_dependency_path: { default: pnpm-lock.yaml }
+    dest: { contextDependent: true, default: "~/setup-pnpm" }
+    package_json_file: { default: package.json }
+    run_install: { default: "null" }
+    standalone: { default: "false" }
+    version: {}

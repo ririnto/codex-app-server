@@ -7,8 +7,43 @@ import { z } from "zod";
 
 import { validateIssueForms } from "../release/check-issue-forms.mjs";
 import { validatePluginVersions } from "../release/check-plugin-version.mjs";
+import { validateWorkflowActionDefaults } from "../rules/check-workflow-action-defaults.mjs";
 
 const repositoryRoot = new URL("../", import.meta.url);
+
+await test("workflow validation reports only equal literals at approved action refs", () => {
+  const content = `jobs:
+  check:
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          check-latest: false
+          package-manager-cache: true
+          node-version-file: package.json
+      - uses: actions/setup-node@v7
+        with:
+          check-latest: true
+      - uses: actions/setup-node@v7
+        with:
+          check-latest: \${{ inputs.check-latest }}
+      - uses: actions/setup-node@v6
+        with:
+          check-latest: false
+      - uses: example/unreviewed@v1
+        with:
+          check-latest: false
+      - uses: pnpm/action-setup@v6
+        with:
+          run_install: null
+`;
+  const errors = validateWorkflowActionDefaults(content, "check.yaml");
+  assert.equal(errors.length, 1);
+  assert.match(
+    errors[0],
+    /check\.yaml: jobs\.check\.steps\[1\]: omit check-latest for actions\/setup-node@v7\b/u
+  );
+});
+
 const validIssueForm = `name: Bug report
 description: Report a reproducible defect.
 body:
