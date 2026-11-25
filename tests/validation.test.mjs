@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import {
-  copyFile,
-  mkdir,
-  mkdtemp,
-  rm,
-  symlink,
-  writeFile
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { copyFile, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -24,43 +16,38 @@ const repositoryRoot = new URL("../", import.meta.url);
 
 await test("the workflow check reports only equal literals at approved action refs", async (t) => {
   const directory = await mkdtemp(
-    path.join(tmpdir(), "codex-workflow-defaults-")
+    fileURLToPath(new URL("node_modules/.workflow-defaults-", repositoryRoot))
   );
   t.after(async () => {
     await rm(directory, { force: true, recursive: true });
   });
-  const checker = "rules/check-workflow-action-defaults.mjs";
-  const metadata = "rules/workflow-action-defaults.yaml";
   const workflow = path.join(".github", "workflows", "check.yaml");
   const fixture = path.join(directory, workflow);
-  await mkdir(path.join(directory, "rules"));
   await mkdir(path.dirname(fixture), { recursive: true });
   await copyFile(
-    new URL(checker, repositoryRoot),
-    path.join(directory, checker)
+    new URL("package.json", repositoryRoot),
+    path.join(directory, "package.json")
   );
-  await copyFile(
-    new URL(metadata, repositoryRoot),
-    path.join(directory, metadata)
-  );
-  await symlink(
-    fileURLToPath(new URL("node_modules", repositoryRoot)),
-    path.join(directory, "node_modules"),
-    "junction"
-  );
-  const args = [checker];
-  const options = { cwd: directory, reject: false };
+  await cp(new URL("rules/", repositoryRoot), path.join(directory, "rules"), {
+    recursive: true
+  });
+  const args = ["--silent", "run", "check:workflow-action-defaults"];
+  const options = { cwd: directory, reject: false, stripFinalNewline: false };
   const controls = `jobs:
   check:
     steps:
       - uses: actions/setup-node@v7
         with:
           check-latest: true
-          package-manager-cache: true
+          PACKAGE-MANAGER-CACHE: true
           node-version-file: package.json
       - uses: actions/setup-node@v7
         with:
-          check-latest: \${{ inputs.check-latest }}
+          check-latest: \${{ false }}
+      - uses: actions/setup-node@v7
+        with:
+          check-latest: true
+          CHECK-LATEST: false
       - uses: actions/setup-node@v6
         with:
           check-latest: false
@@ -72,24 +59,50 @@ await test("the workflow check reports only equal literals at approved action re
           run_install: null
 `;
   await writeFile(fixture, controls);
-  const valid = await execa(process.execPath, args, options);
+  const valid = await execa("pnpm", args, options);
   assert.equal(valid.exitCode, 0, valid.stderr);
   assert.equal(valid.stderr, "");
   await writeFile(
     fixture,
     `${controls}      - uses: actions/setup-node@v7
         with:
-          check-latest: false
+          CHECK-LATEST: false
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: &depth 1
+      - run: echo depth
+        env:
+          DEPTH: *depth
 `
   );
-  const invalid = await execa(process.execPath, args, options);
+  const invalid = await execa("pnpm", args, options);
   assert.equal(invalid.exitCode, 1, invalid.stderr);
-  const diagnostics = invalid.stderr.split("\n");
-  assert.equal(diagnostics.length, 1, invalid.stderr);
-  assert.ok(diagnostics[0].includes(workflow));
-  assert.ok(diagnostics[0].includes("jobs.check.steps[6]"));
-  assert.ok(diagnostics[0].includes("actions/setup-node@v7"));
-  assert.ok(diagnostics[0].includes("check-latest"));
+  const diagnostics = invalid.stderr.trim().split("\n");
+  assert.equal(diagnostics.length, 2, invalid.stderr);
+  assert.ok(diagnostics.every((diagnostic) => diagnostic.startsWith(workflow)));
+  const redundant = diagnostics.find((diagnostic) =>
+    diagnostic.includes(" R35: ")
+  );
+  assert.ok(redundant?.includes("actions/setup-node@v7") === true);
+  assert.ok(redundant.includes("CHECK-LATEST"));
+  const anchored = diagnostics.find((diagnostic) =>
+    diagnostic.includes(" R35-anchor: ")
+  );
+  assert.ok(anchored?.includes("actions/checkout@v7") === true);
+  assert.ok(anchored.includes("fetch-depth"));
+  assert.ok(anchored.includes("&depth"));
+  await writeFile(
+    fixture,
+    "name: workflow-source-sentinel\njobs: *alias-source-sentinel\n"
+  );
+  const malformed = await execa("pnpm", args, options);
+  assert.equal(malformed.exitCode, 1, malformed.stderr);
+  const diagnostic = malformed.stderr.trim();
+  assert.equal(diagnostic.split("\n").length, 1, malformed.stderr);
+  assert.ok(diagnostic.startsWith(`${workflow}:2:`));
+  assert.match(diagnostic, /:\d+:\d+: YAML-parse: .+/u);
+  assert.ok(!diagnostic.includes("source-sentinel"));
+  assert.ok(!diagnostic.includes(directory));
 });
 
 const validIssueForm = `name: Bug report
