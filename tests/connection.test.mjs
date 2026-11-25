@@ -8,10 +8,7 @@ import { test } from "node:test";
 
 import { openClient } from "../lib/connection.mjs";
 
-/**
- * @param {import("node:test").TestContext} t - Test owner of the socket.
- * @param {boolean} cancel - Whether the caller aborts after the upgrade request.
- */
+/** @type {(t: import("node:test").TestContext, cancel: boolean) => Promise<void>} */
 const verifyStalledUpgrade = async (t, cancel) => {
   const directory = await mkdtemp("/tmp/local-upgrade-");
   const server = createServer();
