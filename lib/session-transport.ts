@@ -8,19 +8,19 @@ import { serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
  * Framing and input limits remain owned by the SDK.
  */
 export class SessionTransport extends StdioServerTransport {
-  lifetime = new AbortController();
+  declare private readonly cleanup: () => void;
+  declare private readonly stdout: import("node:stream").Writable;
+
+  private readonly lifetime = new AbortController();
 
   /**
-   * @param {() => void} cleanup - Retire owned resources.
-   * @param {import("node:stream").Readable} stdin - MCP input.
-   * @param {import("node:stream").Writable} stdout - MCP output.
-   * @param {ConstructorParameters<typeof StdioServerTransport>[2]} options - Transport options.
+   * Construct the transport with its native resource cleanup callback.
    */
   constructor(
-    cleanup,
-    stdin = process.stdin,
-    stdout = process.stdout,
-    options = {}
+    cleanup: () => void,
+    stdin: import("node:stream").Readable = process.stdin,
+    stdout: import("node:stream").Writable = process.stdout,
+    options: ConstructorParameters<typeof StdioServerTransport>[2] = {}
   ) {
     super(stdin, stdout, options);
     this.cleanup = cleanup;
@@ -38,9 +38,10 @@ export class SessionTransport extends StdioServerTransport {
 
   /**
    * Send a framed MCP message.
-   * @param {import("@modelcontextprotocol/sdk/types.js").JSONRPCMessage} message - MCP message.
    */
-  async send(message) {
+  async send(
+    message: import("@modelcontextprotocol/sdk/types.js").JSONRPCMessage
+  ) {
     this.lifetime.signal.throwIfAborted();
     if (!this.stdout.write(serializeMessage(message))) {
       await once(this.stdout, "drain", { signal: this.lifetime.signal });

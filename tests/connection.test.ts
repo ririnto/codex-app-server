@@ -6,16 +6,17 @@ import { Socket } from "node:net";
 import path from "node:path";
 import { test } from "node:test";
 
-import { openClient } from "../lib/connection.mjs";
+import { openClient } from "../lib/connection.ts";
 
-/** @type {(t: import("node:test").TestContext, cancel: boolean) => Promise<void>} */
-const verifyStalledUpgrade = async (t, cancel) => {
+const verifyStalledUpgrade: (
+  t: import("node:test").TestContext,
+  cancel: boolean
+) => Promise<void> = async (t, cancel) => {
   const directory = await mkdtemp("/tmp/local-upgrade-");
   const server = createServer();
   const controller = new AbortController();
   const previousSocket = process.env.CODEX_APP_SERVER_SOCKET;
-  /** @type {Set<Socket>} */
-  const sockets = new Set();
+  const sockets = new Set<Socket>();
   server.on("connection", (socket) => {
     sockets.add(socket);
     socket.once("close", () => {
@@ -42,9 +43,9 @@ const verifyStalledUpgrade = async (t, cancel) => {
   const reason = new Error("Caller cancelled the connection");
   await Promise.all([
     (async () => {
-      const [, socket] =
-        /** @type {unknown[]} */
-        (await once(server, "upgrade", { signal: t.signal }));
+      const [, socket] = (await once(server, "upgrade", {
+        signal: t.signal
+      })) as unknown[];
       assert.ok(socket instanceof Socket);
       const closed = once(socket, "close", { signal: t.signal });
       socket.once("end", () => {

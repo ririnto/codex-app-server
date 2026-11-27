@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-import { refusal, USAGE_METHODS } from "./policy.mjs";
-import { loadProtocol, parameterSchema, validateRequest } from "./schema.mjs";
+import { refusal, USAGE_METHODS } from "#lib/policy";
+import { loadProtocol, parameterSchema, validateRequest } from "#lib/schema";
 
 const READ_ONLY_METHODS = new Set([
   "config/read",
@@ -19,10 +19,8 @@ const READ_ONLY_METHODS = new Set([
 /**
  * Derive a stable method name, using a digest for ambiguous, reserved, or overlong spellings.
  * Ordinary alphanumeric path segments retain case and replace slashes with underscores.
- * @param {string} method - Native method name.
- * @param {Set<string>} reserved - Curated tool names.
  */
-export const toolName = (method, reserved) => {
+export const toolName = (method: string, reserved: Set<string>) => {
   const readable = `codex_${method.replaceAll("/", "_")}`;
   return /^[A-Za-z0-9]+(?:\/[A-Za-z0-9]+)*$/u.test(method) &&
     readable.length <= 128 &&
@@ -32,11 +30,7 @@ export const toolName = (method, reserved) => {
     : `codex_method_${createHash("sha256").update(method).digest("hex")}`;
 };
 
-/**
- * @param {{method: string}} entry - Native method.
- * @param {string} kind - Protocol direction.
- */
-const classification = (entry, kind) => {
+const classification = (entry: { method: string }, kind: string) => {
   let value;
   if (kind === "clientRequest" && READ_ONLY_METHODS.has(entry.method)) {
     value = "read";
@@ -51,11 +45,14 @@ const classification = (entry, kind) => {
 /**
  * Derive the full native tool catalog without converting schemas through Zod.
  * Refused methods remain discoverable as tools whose callbacks never open a connection.
- * @param {Awaited<ReturnType<typeof loadProtocol>>} protocol - Generated protocol.
- * @param {Set<string>} reserved - Curated tool names.
- * @param {ReturnType<typeof import("./native-session.mjs").createNativeSessions>["request"]} request - Native request dispatcher.
  */
-export const deriveTools = (protocol, reserved, request) => {
+export const deriveTools = (
+  protocol: Awaited<ReturnType<typeof loadProtocol>>,
+  reserved: Set<string>,
+  request: ReturnType<
+    typeof import("./native-session.ts").createNativeSessions
+  >["request"]
+) => {
   const names = new Set(reserved);
   return protocol.protocols.clientRequest.map((entry) => {
     const name = toolName(entry.method, reserved);
@@ -111,10 +108,10 @@ export const deriveTools = (protocol, reserved, request) => {
     };
     return {
       definition,
-      /** @param {Record<string, unknown>} args - Native arguments.
-       * @param {{signal: AbortSignal}} [extra] - Request context.
-       */
-      handler: async (args, extra) => {
+      handler: async (
+        args: Record<string, unknown>,
+        extra?: { signal: AbortSignal }
+      ) => {
         let result;
         if (reason !== null && reason !== "") {
           result = { content: [{ text: reason, type: "text" }], isError: true };
@@ -146,18 +143,22 @@ export const deriveTools = (protocol, reserved, request) => {
 /**
  * Refresh the native tool registry atomically on discovery, notifying hosts after schema changes.
  * A failed generation retains the last successful list and native calls still require current validation.
- * @param {import("./types.d.ts").Registry} registry - Tool registry.
- * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer["server"]} server - MCP server.
- * @param {ReturnType<typeof import("./native-session.mjs").createNativeSessions>["request"]} request - Native request dispatcher.
  */
-export const registerCatalogTools = async (registry, server, request) => {
+export const registerCatalogTools = async (
+  registry: import("./types.d.ts").Registry,
+  server: import("@modelcontextprotocol/sdk/server/mcp.js").McpServer["server"],
+  request: ReturnType<
+    typeof import("./native-session.ts").createNativeSessions
+  >["request"]
+) => {
   const reserved = new Set([...registry.keys(), "codex_methods"]);
-  /** @type {(Awaited<ReturnType<typeof loadProtocol>> & {tools: ReturnType<typeof deriveTools>}) | undefined} */
-  let current;
-  /** @type {Promise<void> | undefined} */
-  let pending;
-  /** @type {Error | undefined} */
-  let refreshError;
+  let current:
+    | (Awaited<ReturnType<typeof loadProtocol>> & {
+        tools: ReturnType<typeof deriveTools>;
+      })
+    | undefined;
+  let pending: Promise<void> | undefined;
+  let refreshError: Error | undefined;
   const refresh = async ({ regenerate = true } = {}) => {
     if (pending) {
       await pending;

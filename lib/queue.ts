@@ -2,63 +2,53 @@ import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
-import { openClient, withClient } from "./connection.mjs";
-import { nativeNotification, threadRead } from "./native-schema.mjs";
-import { startTurn } from "./turn.mjs";
+import { openClient, withClient } from "#lib/connection";
+import { nativeNotification, threadRead } from "#lib/native-schema";
+import { startTurn } from "#lib/turn";
 
-/**
- * @typedef {object} QueueRecord
- * @property {string} id - Delivery identifier.
- * @property {string} status - Delivery status.
- * @property {string} reason - Delivery reason.
- * @property {string} [text] - Pending message text.
- * @property {string} [turnId] - Started turn identifier.
- * @property {unknown} [error] - Native turn error.
- */
+interface QueueRecord {
+  id: string;
+  status: string;
+  reason: string;
+  text?: string;
+  turnId?: string;
+  error?: unknown;
+}
 
-/**
- * @typedef {object} Queue
- * @property {Awaited<ReturnType<typeof openClient>> | null} client - Owned client.
- * @property {boolean} closed - Whether delivery has stopped.
- * @property {boolean} draining - Whether delivery is active.
- * @property {Promise<void> | null} delivery - Notification-triggered delivery.
- * @property {Promise<void> | null} ready - Connection setup.
- * @property {QueueRecord[]} records - Bounded delivery receipts.
- * @property {AbortController} stopped - Queue lifetime.
- * @property {string} threadId - Owned thread identifier.
- * @property {ReturnType<typeof setTimeout>} [timer] - Queue deadline.
- * @property {false | {signal?: AbortSignal}} wake - Deferred delivery.
- */
+interface Queue {
+  client: Awaited<ReturnType<typeof openClient>> | null;
+  closed: boolean;
+  draining: boolean;
+  delivery: Promise<void> | null;
+  ready: Promise<void> | null;
+  records: QueueRecord[];
+  stopped: AbortController;
+  threadId: string;
+  timer?: ReturnType<typeof setTimeout>;
+  wake: false | { signal?: AbortSignal };
+}
 
-/** @type {Map<string, Queue>} */
-const queues = new Map();
-/** @type {Map<string, symbol>} */
-const writers = new Map();
+const queues = new Map<string, Queue>();
+const writers = new Map<string, symbol>();
 const MAX_MESSAGES = 32;
 const MAX_THREADS = 128;
 const QUEUE_TIMEOUT_MS = 1_800_000;
 
 /**
  * Detect the provider compatibility error without assuming all provider errors are equivalent.
- * @param {unknown} value - Provider error.
  */
-export const unsupportedInterrupt = (value) =>
+export const unsupportedInterrupt = (value: unknown) =>
   /unsupported websocket request type[^]*response\.interrupt/iu.test(
     JSON.stringify(value)
   );
 
 /**
  * Return whether a process-local queue currently owns delivery for this thread.
- * @param {string} threadId - Thread identifier.
  */
-export const queuedThread = (threadId) =>
+export const queuedThread = (threadId: string) =>
   queues.get(threadId)?.closed === false;
 
-/**
- * @param {Queue} queue - Queue to stop.
- * @param {string} reason - Refusal reason.
- */
-const stop = (queue, reason) => {
+const stop = (queue: Queue, reason: string) => {
   queue.closed = true;
   clearTimeout(queue.timer);
   for (const record of queue.records) {
@@ -74,17 +64,15 @@ const stop = (queue, reason) => {
   client?.close();
 };
 
-/** @param {Queue} queue - Queue to inspect. */
-const snapshot = (queue) => ({
+const snapshot = (queue: Queue) => ({
   messages: queue.records.map(({ text: _text, ...record }) => record),
   threadId: queue.threadId
 });
 
 /**
  * Require observed idle evidence before starting another turn.
- * @param {z.infer<typeof threadRead>["thread"]} thread - Observed thread state.
  */
-export const isThreadIdle = (thread) => {
+export const isThreadIdle = (thread: z.infer<typeof threadRead>["thread"]) => {
   const { turns } = thread;
   const status =
     typeof thread.status === "string" ? thread.status : thread.status?.type;
@@ -105,11 +93,7 @@ export const isThreadIdle = (thread) => {
   );
 };
 
-/**
- * @param {Queue} queue - Queue to prepare.
- * @param {AbortSignal} [signal] - Delivery cancellation.
- */
-const prepareDelivery = async (queue, signal) => {
+const prepareDelivery = async (queue: Queue, signal?: AbortSignal) => {
   await queue.ready;
   if (!queue.client) {
     return false;
@@ -140,11 +124,7 @@ const prepareDelivery = async (queue, signal) => {
   return isThreadIdle(thread);
 };
 
-/**
- * @param {Queue | undefined} queue - Queue to inspect.
- * @param {AbortSignal} [signal] - Delivery cancellation.
- */
-const pendingWake = (queue, signal) =>
+const pendingWake = (queue: Queue | undefined, signal?: AbortSignal) =>
   queue !== undefined &&
   queue.wake !== false &&
   !queue.closed &&
@@ -152,14 +132,9 @@ const pendingWake = (queue, signal) =>
     ? { signal: signal?.aborted === true ? queue.wake.signal : signal }
     : null;
 
-/** @param {AbortSignal | undefined} signal - Operation signal. */
-const aborted = (signal) => signal?.aborted === true;
+const aborted = (signal: AbortSignal | undefined) => signal?.aborted === true;
 
-/**
- * @param {Queue} queue - Queue to drain.
- * @param {AbortSignal} [signal] - Delivery cancellation.
- */
-const deliver = async (queue, signal) => {
+const deliver = async (queue: Queue, signal?: AbortSignal) => {
   if (aborted(signal)) {
     return;
   }
@@ -228,16 +203,12 @@ const deliver = async (queue, signal) => {
 /**
  * Queue authorized text in memory and deliver it as a fresh turn after observed completion.
  * Native writer refusals stop delivery without forcing locks or retrying ambiguous writes.
- * @param {string} threadId - Thread identifier.
- * @param {string} text - Authorized message.
- * @param {string} [reason] - Reason for queuing.
- * @param {{signal?: AbortSignal, acknowledge?: () => void}} [operation] - Caller cancellation and acknowledgement.
  */
 export const enqueueMessage = async (
-  threadId,
-  text,
+  threadId: string,
+  text: string,
   reason = "Active turn",
-  operation = {}
+  operation: { signal?: AbortSignal; acknowledge?: () => void } = {}
 ) => {
   let queue = queues.get(threadId);
   if (!queue || queue.closed) {
@@ -248,8 +219,7 @@ export const enqueueMessage = async (
       }
       queues.delete(retired[0]);
     }
-    /** @type {Queue} */
-    const createdQueue = {
+    const createdQueue: Queue = {
       client: null,
       closed: false,
       draining: false,
@@ -331,11 +301,14 @@ export const enqueueMessage = async (
       queue.records.splice(retired, 1);
     }
   }
-  /** @type {QueueRecord} */
-  const record = { id: randomUUID(), reason, status: "queued", text };
+  const record: QueueRecord = {
+    id: randomUUID(),
+    reason,
+    status: "queued",
+    text
+  };
   queue.records.push(record);
-  /** @type {PromiseWithResolvers<void>} */
-  const cancelled = Promise.withResolvers();
+  const cancelled: PromiseWithResolvers<void> = Promise.withResolvers();
   if (operation.signal) {
     const { signal } = operation;
     const cancel = () => {
@@ -379,80 +352,92 @@ export const enqueueMessage = async (
 
 /**
  * Serialize curated writes per thread and return structured refusal outcomes.
- * @template {{thread_id: string}} T
- * @param {(client: Awaited<ReturnType<typeof openClient>>, args: T, release: () => void, operation: {signal?: AbortSignal, acknowledge?: () => void}) => unknown} handler - Authorized write handler.
- * @returns {(args: T, extra?: {signal?: AbortSignal}) => Promise<{content: {text: string | undefined, type: string}[], isError?: boolean}>} Serialized write handler.
  */
-export const withThreadWriter = (handler) => async (args, extra) => {
-  const threadId = args.thread_id;
-  if (writers.has(threadId)) {
-    return {
-      content: [
-        {
-          text: JSON.stringify({
-            reason: "Another plugin operation owns this thread",
-            status: "refused",
-            threadId
-          }),
-          type: "text"
-        }
-      ],
-      isError: true
-    };
-  }
-  const owner = Symbol(threadId);
-  /** @type {{signal?: AbortSignal, acknowledge?: () => void}} */
-  const operation = { signal: extra?.signal };
-  writers.set(threadId, owner);
-  const release = () => {
-    if (writers.get(threadId) === owner) {
-      writers.delete(threadId);
-    }
-  };
-  let response;
-  try {
-    const result = await withClient(
-      /** @param {Awaited<ReturnType<typeof openClient>>} client - Native client.
-       * @param {T} input - Tool arguments.
-       */
-      (client, input) => handler(client, input, release, operation)
-    )(args, extra);
-    response =
-      result.isError === true
-        ? {
-            ...result,
-            content: [
-              {
-                text: JSON.stringify({
-                  reason: result.content[0].text,
-                  status: "refused",
-                  threadId
-                }),
-                type: "text"
-              }
-            ]
+export const withThreadWriter =
+  <T extends { thread_id: string }>(
+    handler: (
+      client: Awaited<ReturnType<typeof openClient>>,
+      args: T,
+      release: () => void,
+      operation: { signal?: AbortSignal; acknowledge?: () => void }
+    ) => unknown
+  ): ((
+    args: T,
+    extra?: { signal?: AbortSignal }
+  ) => Promise<{
+    content: { text: string | undefined; type: string }[];
+    isError?: boolean;
+  }>) =>
+  async (args, extra) => {
+    const threadId = args.thread_id;
+    if (writers.has(threadId)) {
+      return {
+        content: [
+          {
+            text: JSON.stringify({
+              reason: "Another plugin operation owns this thread",
+              status: "refused",
+              threadId
+            }),
+            type: "text"
           }
-        : result;
-  } finally {
-    try {
-      release();
-      const queue = queues.get(threadId);
-      const pending = pendingWake(queue, operation.signal);
-      if (pending && queue) {
-        await deliver(queue, pending.signal);
-      }
-    } finally {
-      operation.acknowledge?.();
+        ],
+        isError: true
+      };
     }
-  }
-  return response;
-};
+    const owner = Symbol(threadId);
+    const operation: { signal?: AbortSignal; acknowledge?: () => void } = {
+      signal: extra?.signal
+    };
+    writers.set(threadId, owner);
+    const release = () => {
+      if (writers.get(threadId) === owner) {
+        writers.delete(threadId);
+      }
+    };
+    let response;
+    try {
+      const result = await withClient(
+        (client: Awaited<ReturnType<typeof openClient>>, input: T) =>
+          handler(client, input, release, operation)
+      )(args, extra);
+      response =
+        result.isError === true
+          ? {
+              ...result,
+              content: [
+                {
+                  text: JSON.stringify({
+                    reason: result.content[0].text,
+                    status: "refused",
+                    threadId
+                  }),
+                  type: "text"
+                }
+              ]
+            }
+          : result;
+    } finally {
+      try {
+        release();
+        const queue = queues.get(threadId);
+        const pending = pendingWake(queue, operation.signal);
+        if (pending && queue) {
+          await deliver(queue, pending.signal);
+        }
+      } finally {
+        operation.acknowledge?.();
+      }
+    }
+    return response;
+  };
 
 /**
  * Register read-only queue receipts and cancellation of undelivered messages.
- * @param {import("./types.d.ts").ToolRegistry} server - Curated tool registry.
  */
-export const registerQueueTools = (server) => {
+export const registerQueueTools = (
+  server: import("./types.d.ts").ToolRegistry
+) => {
   server.registerTool(
     "codex_queue",
     {

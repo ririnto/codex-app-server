@@ -1,12 +1,13 @@
 import { z } from "zod";
 
-import { withClient } from "./connection.mjs";
+import { withClient } from "#lib/connection";
 
 /**
  * Register the configured MCP tool proxy using a temporary ephemeral thread.
- * @param {import("./types.d.ts").ToolRegistry} server - Curated tool registry.
  */
-export const registerMcpTool = (server) => {
+export const registerMcpTool = (
+  server: import("./types.d.ts").ToolRegistry
+) => {
   server.registerTool(
     "codex_mcp_tool",
     {

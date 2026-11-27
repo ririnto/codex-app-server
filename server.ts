@@ -6,15 +6,15 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import { registerCatalogTools } from "./lib/catalog.mjs";
-import { registerMcpTool } from "./lib/mcp-tool.mjs";
-import { createNativeSessions } from "./lib/native-session.mjs";
-import { refusal } from "./lib/policy.mjs";
-import { closeQueues, registerQueueTools } from "./lib/queue.mjs";
-import { SessionTransport } from "./lib/session-transport.mjs";
-import { registerThreadAdminTools } from "./lib/thread-admin.mjs";
-import { registerThreadTools } from "./lib/thread-tools.mjs";
-import { registerTurnTools } from "./lib/turn-tools.mjs";
+import { registerCatalogTools } from "#lib/catalog";
+import { registerMcpTool } from "#lib/mcp-tool";
+import { createNativeSessions } from "#lib/native-session";
+import { refusal } from "#lib/policy";
+import { closeQueues, registerQueueTools } from "#lib/queue";
+import { SessionTransport } from "#lib/session-transport";
+import { registerThreadAdminTools } from "#lib/thread-admin";
+import { registerThreadTools } from "#lib/thread-tools";
+import { registerTurnTools } from "#lib/turn-tools";
 
 /**
  * Expose the running Codex app-server as a stdio MCP server.
@@ -61,10 +61,12 @@ const { server } = new McpServer(
   }
 );
 
-/** @type {Map<string, import("./lib/types.d.ts").RegisteredTool>} */
-const tools = new Map();
-/** @type {import("./lib/types.d.ts").ToolRegistry["registerTool"]} */
-const registerTool = (name, config, handler) => {
+const tools = new Map<string, import("./lib/types.d.ts").RegisteredTool>();
+const registerTool: import("./lib/types.d.ts").ToolRegistry["registerTool"] = (
+  name,
+  config,
+  handler
+) => {
   if (tools.has(name)) {
     throw new Error(`Duplicated curated tool: ${name}`);
   }
@@ -126,8 +128,7 @@ const close = () => {
   closeQueues();
   native.close();
 };
-/** @type {PromiseWithResolvers<void>} */
-const stopped = Promise.withResolvers();
+const stopped: PromiseWithResolvers<void> = Promise.withResolvers();
 const stop = () => {
   stopped.resolve();
 };

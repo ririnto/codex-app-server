@@ -31,16 +31,12 @@ const mcpSchema = z.looseObject({
 const workspaceSchema = z.looseObject({
   catalog: z.looseObject({ husky: z.string() })
 });
-/**
- * @template {z.ZodType} S
- * @param {string} directory - Base directory.
- * @param {string} filename - JSON file.
- * @param {S} schema - Expected file shape.
- * @returns {Promise<z.infer<S>>} Parsed JSON data.
- */
-const readJson = async (directory, filename, schema) => {
-  /** @type {unknown} */
-  const value = JSON.parse(
+const readJson = async <S extends z.ZodType>(
+  directory: string,
+  filename: string,
+  schema: S
+): Promise<z.infer<S>> => {
+  const value: unknown = JSON.parse(
     await readFile(path.join(directory, filename), "utf-8")
   );
   return schema.parse(value);
@@ -69,11 +65,7 @@ await test("both hosts resolve the shared conventional skill and their own MCP c
   const claudeServer = claudeMcp.mcpServers[claude.name];
   const codexServer = codexMcp.mcpServers[codex.name];
   const huskyPackage = `--package=husky@${workspace.catalog.husky}`;
-  /**
-   * @param {string} packagePath - Package location.
-   * @param {string} binary - Binary name.
-   */
-  const localPackageArgs = (packagePath, binary) => [
+  const localPackageArgs = (packagePath: string, binary: string) => [
     "exec",
     "--yes",
     huskyPackage,

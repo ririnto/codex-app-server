@@ -8,7 +8,7 @@ Use [CONTRIBUTING.md](CONTRIBUTING.md) for contribution procedures and verificat
 ## Organize repository resources
 
 Keep runtime entry points at repository root and supporting runtime modules in `lib/`.
-Keep native monitor registration in `monitor.mjs` and `lib/monitor.mjs`, release gates in `release/`, and disposable fixtures in `tests/`.
+Keep native monitor registration in `monitor.ts` and `lib/monitor.ts`, release gates in `release/`, and disposable fixtures in `tests/`.
 Keep lint rules in `rules/` and GitHub automation in `.github/`.
 Keep consumer workflows in `skills/` and declare that directory in both host manifests.
 Put skill-owned executable helpers in the owning skill's `scripts/` directory when helpers are needed.
@@ -66,7 +66,7 @@ Call the result inconclusive when a side is untuned or correctness, timed work, 
 Keep `.markdownlint-cli2.jsonc` set to `gitignore: true` and compact table-column style.
 Sort configuration object keys and preserve array order and values.
 Keep explicit Markdownlint ignores empty unless a concrete file cannot be covered by `.gitignore`.
-Declare Husky as a catalog-backed development dependency, set `prepare` to `husky`, and keep real hooks under `.husky/`.
+Declare Husky as a catalog-backed development dependency, run `husky` and the package build from `prepare`, and keep real hooks under `.husky/`.
 Have the hooks invoke the package's pre-commit and pre-push scripts.
 Do not disable rules, add suppressions, or weaken configuration to make checks pass.
 
@@ -130,10 +130,10 @@ Propagate watch backpressure to native input and cancel pending stdout drains du
 
 ## Enforce method policy
 
-Maintain shared method policy in `lib/policy.mjs`.
+Maintain shared method policy in `lib/policy.ts`.
 Refused methods may have discoverable tools, but their callbacks must refuse before validation or connecting.
 Keep thread archive, unarchive, and delete on the native CLI.
-Server-initiated approvals remain refused by `lib/connection.mjs`.
+Server-initiated approvals remain refused by `lib/connection.ts`.
 
 ## Test protocol and issue behavior
 

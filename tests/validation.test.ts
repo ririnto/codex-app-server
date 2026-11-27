@@ -10,8 +10,8 @@ import { execa } from "execa";
 import { load as yamlParser } from "js-yaml";
 import { z } from "zod";
 
-import { validateIssueForms } from "../release/check-issue-forms.mjs";
-import { validatePluginVersions } from "../release/check-plugin-version.mjs";
+import { validateIssueForms } from "../release/check-issue-forms.ts";
+import { validatePluginVersions } from "../release/check-plugin-version.ts";
 
 const repositoryRoot = new URL("../", import.meta.url);
 const workflowCheck = ["--silent", "run", "check:workflow-action-defaults"];
@@ -170,8 +170,8 @@ jobs:
   const diagnostics = z.array(diagnostic).parse(JSON.parse(invalid.stderr));
   assert.equal(diagnostics.length, 16);
   const lines = failures.split("\n");
-  /** @type {(text: string) => number} */
-  const lineOf = (text) => lines.findIndex((line) => line.includes(text)) + 1;
+  const lineOf: (text: string) => number = (text) =>
+    lines.findIndex((line) => line.includes(text)) + 1;
   for (const result of [valid, invalid]) {
     const reviews = z
       .array(
@@ -279,8 +279,7 @@ jobs:
   );
   assert.ok(!byLine.has(lineOf("fetch-depth: *different_depth")));
   assert.ok(!byLine.has(lineOf("with: *different_inputs")));
-  /** @type {[number, string, string][]} */
-  const scalarFindings = [
+  const scalarFindings: [number, string, string][] = [
     [lineOf("fetch-depth: 0.9999999999999996"), "fetch-depth", "omit"],
     [lineOf("sparse-checkout: null"), "sparse-checkout", "omit"],
     [lineOf('filter: ""'), "filter", "omit"],

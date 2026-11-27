@@ -2,7 +2,7 @@ import { on } from "node:events";
 
 import { z } from "zod";
 
-import { nativeNotification } from "./native-schema.mjs";
+import { nativeNotification } from "#lib/native-schema";
 
 const startedTurn = z.looseObject({
   turn: z.looseObject({ id: z.string() })
@@ -10,21 +10,19 @@ const startedTurn = z.looseObject({
 
 /**
  * Wait for the turn's completion and collect its final agent message until the deadline.
- * @param {Awaited<ReturnType<typeof import("./connection.mjs").openClient>>} client - Native client.
- * @param {AsyncIterable<unknown[]>} notifications - Buffered notifications.
- * @param {string} turnId - Turn identifier.
- * @param {number} waitSeconds - Completion deadline.
- * @param {AbortController} waiting - Wait lifetime.
  */
 const awaitTurn = async (
-  client,
-  notifications,
-  turnId,
-  waitSeconds,
-  waiting
+  client: Awaited<ReturnType<typeof import("./connection.ts").openClient>>,
+  notifications: AsyncIterable<unknown[]>,
+  turnId: string,
+  waitSeconds: number,
+  waiting: AbortController
 ) => {
-  /** @type {{finalMessage: string | null, status: string, turnId: string}} */
-  const result = { finalMessage: null, status: "waitTimedOut", turnId };
+  const result: {
+    finalMessage: string | null;
+    status: string;
+    turnId: string;
+  } = { finalMessage: null, status: "waitTimedOut", turnId };
   const timer = setTimeout(() => {
     waiting.abort();
   }, waitSeconds * 1000);
@@ -72,18 +70,13 @@ const awaitTurn = async (
 /**
  * Start one turn with completion notifications buffered before the request is sent.
  * Release the caller's optional writer after acknowledgment, before waiting for completion.
- * @param {Awaited<ReturnType<typeof import("./connection.mjs").openClient>>} client - Native client.
- * @param {string} threadId - Thread identifier.
- * @param {string} text - Authorized message.
- * @param {number} [waitSeconds] - Completion deadline.
- * @param {(() => void) | null} [onStarted] - Acknowledgement callback.
  */
 export const startTurn = async (
-  client,
-  threadId,
-  text,
+  client: Awaited<ReturnType<typeof import("./connection.ts").openClient>>,
+  threadId: string,
+  text: string,
   waitSeconds = 0,
-  onStarted = null
+  onStarted: (() => void) | null = null
 ) => {
   const waiting = new AbortController();
   const notifications =

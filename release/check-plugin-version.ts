@@ -8,12 +8,12 @@ const manifest = z.looseObject({ version: z.unknown() });
 
 /**
  * Validate matching host plugin versions in yyyy.mm.dd.seq format.
- * @param {unknown} claudeVersion - Claude host version from the manifest.
- * @param {unknown} codexVersion - Codex host version from the manifest.
  */
-export const validatePluginVersions = (claudeVersion, codexVersion) => {
-  /** @type {Array<[string, unknown]>} */
-  const versions = [
+export const validatePluginVersions = (
+  claudeVersion: unknown,
+  codexVersion: unknown
+) => {
+  const versions: [string, unknown][] = [
     ["Claude", claudeVersion],
     ["Codex", codexVersion]
   ];
@@ -63,12 +63,10 @@ if (
 ) {
   try {
     const root = fileURLToPath(new URL("../", import.meta.url));
-    /** @type {unknown} */
-    const claudeContent = JSON.parse(
+    const claudeContent: unknown = JSON.parse(
       readFileSync(path.join(root, ".claude-plugin/plugin.json"), "utf-8")
     );
-    /** @type {unknown} */
-    const codexContent = JSON.parse(
+    const codexContent: unknown = JSON.parse(
       readFileSync(path.join(root, ".codex-plugin/plugin.json"), "utf-8")
     );
     const claude = manifest.parse(claudeContent);

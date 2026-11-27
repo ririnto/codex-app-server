@@ -1,19 +1,17 @@
 import { z } from "zod";
 
-import { threadRead } from "./native-schema.mjs";
+import { threadRead } from "#lib/native-schema";
 import {
   enqueueMessage,
   queuedThread,
   unsupportedInterrupt,
   withThreadWriter
-} from "./queue.mjs";
+} from "#lib/queue";
 
 const MAX_UNSUPPORTED_THREADS = 128;
-/** @type {Set<string>} */
-const unsupportedThreads = new Set();
+const unsupportedThreads = new Set<string>();
 
-/** @param {string} threadId - Thread identifier. */
-const rememberUnsupportedThread = (threadId) => {
+const rememberUnsupportedThread = (threadId: string) => {
   unsupportedThreads.delete(threadId);
   unsupportedThreads.add(threadId);
   if (unsupportedThreads.size > MAX_UNSUPPORTED_THREADS) {
@@ -36,10 +34,11 @@ const THREAD_ID = z
 
 /**
  * Return the thread's last turn ID, refusing unless that turn is still in progress.
- * @param {Awaited<ReturnType<typeof import("./connection.mjs").openClient>>} client - Native client.
- * @param {string} threadId - Thread identifier.
  */
-const activeTurn = async (client, threadId) => {
+const activeTurn = async (
+  client: Awaited<ReturnType<typeof import("./connection.ts").openClient>>,
+  threadId: string
+) => {
   const { thread } = threadRead.parse(
     await client.request("thread/read", { includeTurns: true, threadId })
   );
@@ -54,9 +53,10 @@ const activeTurn = async (client, threadId) => {
 
 /**
  * Register active-turn steering and interruption tools on the MCP server.
- * @param {import("./types.d.ts").ToolRegistry} server - Curated tool registry.
  */
-export const registerTurnTools = (server) => {
+export const registerTurnTools = (
+  server: import("./types.d.ts").ToolRegistry
+) => {
   server.registerTool(
     "codex_steer",
     {

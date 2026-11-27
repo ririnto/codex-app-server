@@ -5,33 +5,35 @@
   "description": "Stdio MCP access to the running Codex app-server Unix control socket.",
   "license": "MIT",
   "bin": {
-    "codex-app-server": "./server.mjs",
-    "codex-thread-monitor": "./monitor.mjs"
+    "codex-app-server": "./dist/server.js",
+    "codex-thread-monitor": "./dist/monitor.js"
   },
   "files": [
     "THIRD_PARTY_NOTICES.md",
-    "server.mjs",
-    "monitor.mjs",
-    "lib/",
+    "dist/",
     "skills/"
   ],
   "type": "module",
+  "imports": {
+    "#lib/*": "./lib/*.ts"
+  },
   "scripts": {
+    "build": "node release/build-runtime.ts",
     "check": "run-p check:*",
     "check:test": "run-p check:test:*",
-    "check:test:tooling": "node --test \"**/*.test.mjs\"",
-    "check:issue-forms": "node release/check-issue-forms.mjs",
-    "check:plugin-version": "node release/check-plugin-version.mjs",
+    "check:test:tooling": "node --test \"**/*.test.ts\"",
+    "check:issue-forms": "node release/check-issue-forms.ts",
+    "check:plugin-version": "node release/check-plugin-version.ts",
     "check:markdownlint-cli2": "markdownlint-cli2",
     "check:types": "tsc -p tsconfig.json --noEmit --pretty false",
     "check:ultracite": "ultracite check",
-    "check:workflow-action-defaults": "node rules/check-workflow-action-defaults.mjs",
+    "check:workflow-action-defaults": "node rules/check-workflow-action-defaults.ts",
     "fix": "run-p fix:*",
     "fix:markdownlint-cli2": "markdownlint-cli2 --fix",
     "fix:ultracite": "ultracite fix",
     "pre-commit": "run-s check",
     "pre-push": "run-s check",
-    "prepare": "husky"
+    "prepare": "husky >&2 && npm run build >&2"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

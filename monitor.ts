@@ -2,7 +2,7 @@
 import { once } from "node:events";
 import { parseArgs } from "node:util";
 
-import { watchThreads } from "./lib/monitor.mjs";
+import { watchThreads } from "#lib/monitor";
 
 const STATUSES = ["active", "idle", "notLoaded", "failed", "systemError"];
 const DEFAULT_STATUSES = STATUSES.filter((status) => status !== "notLoaded");

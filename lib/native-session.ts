@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { openClient, withClient } from "./connection.mjs";
+import { openClient, withClient } from "#lib/connection";
 
 const commandParams = z.looseObject({ processId: z.string().nullish() });
 const watchParams = z.looseObject({ watchId: z.string() });
@@ -17,25 +17,28 @@ const watchChange = z.looseObject({
  * Own connection-scoped command and watch resources until their native operation or MCP session ends.
  * Command output remains in its result.
  * Watch changes use standard MCP logging without retaining history.
- * @param {import("@modelcontextprotocol/sdk/server/mcp.js").McpServer["server"]} server - MCP server.
  */
-export const createNativeSessions = (server) => {
-  /** @type {Map<string, Promise<Awaited<ReturnType<typeof openClient>>>>} */
-  const commands = new Map();
-  /** @type {Map<string, Promise<Awaited<ReturnType<typeof openClient>>>>} */
-  const watches = new Map();
+export const createNativeSessions = (
+  server: import("@modelcontextprotocol/sdk/server/mcp.js").McpServer["server"]
+) => {
+  const commands = new Map<
+    string,
+    Promise<Awaited<ReturnType<typeof openClient>>>
+  >();
+  const watches = new Map<
+    string,
+    Promise<Awaited<ReturnType<typeof openClient>>>
+  >();
   const lifetime = new AbortController();
-  /** @param {AbortSignal} [signal] - Native operation cancellation. */
-  const connect = async (signal) => {
+  const connect = async (signal?: AbortSignal) => {
     lifetime.signal.throwIfAborted();
     return await openClient({ signal });
   };
-  /**
-   * @param {string} method - Command method.
-   * @param {z.infer<typeof commandParams>} params - Command parameters.
-   * @param {{signal?: AbortSignal}} [extra] - Operation context.
-   */
-  const command = async (method, params, extra) => {
+  const command = async (
+    method: string,
+    params: z.infer<typeof commandParams>,
+    extra?: { signal?: AbortSignal }
+  ) => {
     if (method !== "command/exec") {
       const pending =
         typeof params.processId === "string"
@@ -59,11 +62,9 @@ export const createNativeSessions = (server) => {
       commands.set(params.processId, pending);
     }
     let client;
-    /** @type {z.infer<typeof commandOutput>[]} */
-    const notifications = [];
+    const notifications: z.infer<typeof commandOutput>[] = [];
     let response;
-    /** @param {Event} event - Native notification event. */
-    const receive = (event) => {
+    const receive = (event: Event) => {
       const parsed = commandOutput.safeParse(
         event instanceof CustomEvent ? event.detail : undefined
       );
@@ -96,12 +97,11 @@ export const createNativeSessions = (server) => {
     }
     return response;
   };
-  /**
-   * @param {string} method - Watch method.
-   * @param {z.infer<typeof watchParams>} params - Watch parameters.
-   * @param {{signal?: AbortSignal}} [extra] - Operation context.
-   */
-  const watch = async (method, params, extra) => {
+  const watch = async (
+    method: string,
+    params: z.infer<typeof watchParams>,
+    extra?: { signal?: AbortSignal }
+  ) => {
     let pending = watches.get(params.watchId);
     if (!pending && method === "fs/unwatch") {
       throw new Error("No active filesystem connection for this watchId");
@@ -116,8 +116,7 @@ export const createNativeSessions = (server) => {
     try {
       client = await pending;
       if (created) {
-        /** @param {object} detail - Native notification. */
-        const receive = async (detail) => {
+        const receive = async (detail: object) => {
           const parsed = watchChange.safeParse(detail);
           if (
             parsed.success &&
@@ -173,11 +172,12 @@ export const createNativeSessions = (server) => {
     },
     /**
      * Dispatch a native request on its connection-scoped lifecycle.
-     * @param {string} method - Native method.
-     * @param {unknown} params - Validated method parameters.
-     * @param {{signal?: AbortSignal}} [extra] - Operation context.
      */
-    request: async (method, params, extra) => {
+    request: async (
+      method: string,
+      params: unknown,
+      extra?: { signal?: AbortSignal }
+    ) => {
       const context = {
         signal: AbortSignal.any([
           lifetime.signal,

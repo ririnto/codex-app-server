@@ -23,14 +23,14 @@ import { execa } from "execa";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 
-import { openClient } from "../lib/connection.mjs";
-import { watchThreads } from "../lib/monitor.mjs";
-import { createNativeSessions } from "../lib/native-session.mjs";
-import { closeQueues, enqueueMessage } from "../lib/queue.mjs";
-import { SessionTransport } from "../lib/session-transport.mjs";
+import { openClient } from "../lib/connection.ts";
+import { watchThreads } from "../lib/monitor.ts";
+import { createNativeSessions } from "../lib/native-session.ts";
+import { closeQueues, enqueueMessage } from "../lib/queue.ts";
+import { SessionTransport } from "../lib/session-transport.ts";
 
-const serverPath = fileURLToPath(new URL("../server.mjs", import.meta.url));
-const monitorPath = fileURLToPath(new URL("../monitor.mjs", import.meta.url));
+const serverPath = fileURLToPath(new URL("../server.ts", import.meta.url));
+const monitorPath = fileURLToPath(new URL("../monitor.ts", import.meta.url));
 const SOURCE_KINDS = [
   "cli",
   "vscode",
@@ -44,7 +44,14 @@ const SOURCE_KINDS = [
   "unknown"
 ];
 
-/** @typedef {{id: string, status: string, completedAt?: number, items?: {phase: string, text: string, type: string}[], itemsView?: string, error?: {message: string}}} FixtureTurn */
+interface FixtureTurn {
+  id: string;
+  status: string;
+  completedAt?: number;
+  items?: { phase: string; text: string; type: string }[];
+  itemsView?: string;
+  error?: { message: string };
+}
 
 const fixtureMessage = z.looseObject({
   error: z.unknown().optional(),
@@ -132,19 +139,23 @@ const CATALOG = {
 
 /**
  * Start a disposable Unix WebSocket fixture.
- * @param {import("node:test").TestContext} context - Test owner of the fixture.
- * @param {(input: {connections: Set<import("ws").WebSocket>, message: z.infer<typeof fixtureMessage>, reply: (result: unknown) => void, ws: import("ws").WebSocket}) => void} handler - Native request handler.
- * @param {{failInitialize?: boolean}} [options] - Fixture configuration.
  */
-const socketFixture = async (context, handler, options = {}) => {
+const socketFixture = async (
+  context: import("node:test").TestContext,
+  handler: (input: {
+    connections: Set<import("ws").WebSocket>;
+    message: z.infer<typeof fixtureMessage>;
+    reply: (result: unknown) => void;
+    ws: import("ws").WebSocket;
+  }) => void,
+  options: { failInitialize?: boolean } = {}
+) => {
   const directory = await mkdtemp("/tmp/local-mcp-");
   const socket = path.join(directory, "socket space-\u03A9?#:.sock");
   const http = createServer();
   const wsServer = new WebSocketServer({ server: http });
-  /** @type {z.infer<typeof fixtureMessage>[]} */
-  const requests = [];
-  /** @type {Set<import("ws").WebSocket>} */
-  const connections = new Set();
+  const requests: z.infer<typeof fixtureMessage>[] = [];
+  const connections = new Set<import("ws").WebSocket>();
   wsServer.on("connection", (ws) => {
     connections.add(ws);
     ws.on("error", () => {});
@@ -160,15 +171,13 @@ const socketFixture = async (context, handler, options = {}) => {
       } else {
         data = Buffer.from(bytes);
       }
-      /** @type {unknown} */
-      const parsed = JSON.parse(data.toString());
+      const parsed: unknown = JSON.parse(data.toString());
       const message = fixtureMessage.parse(parsed);
       if (message.id === undefined || message.id === "" || message.id === 0) {
         return;
       }
       requests.push(message);
-      /** @param {unknown} result - Native response payload. */
-      const reply = (result) => {
+      const reply = (result: unknown) => {
         ws.send(JSON.stringify({ id: message.id, result }));
       };
       if (message.method === "initialize" && options.failInitialize !== true) {
@@ -193,12 +202,18 @@ const socketFixture = async (context, handler, options = {}) => {
   return { connections, directory, requests, socket };
 };
 
-/**
- * @param {import("node:test").TestContext} context - Test owner of the client.
- * @param {Parameters<typeof socketFixture>[1]} handler - Native request handler.
- * @param {{catalog?: Record<string, unknown>, clientNotifications?: unknown, failInitialize?: boolean, package?: string, serverNotifications?: unknown, serverRequests?: unknown}} [options] - Client and catalog fixture configuration.
- */
-const fixture = async (context, handler, options = {}) => {
+const fixture = async (
+  context: import("node:test").TestContext,
+  handler: Parameters<typeof socketFixture>[1],
+  options: {
+    catalog?: Record<string, unknown>;
+    clientNotifications?: unknown;
+    failInitialize?: boolean;
+    package?: string;
+    serverNotifications?: unknown;
+    serverRequests?: unknown;
+  } = {}
+) => {
   const client = new Client({ name: "fixture", version: "1" });
   context.after(async () => {
     await client.close();
@@ -280,11 +295,12 @@ if (process.argv[2] === "--version") {
 
 /**
  * Decode an MCP tool's JSON result while preserving the error flag for assertions.
- * @param {Client} client - MCP client connected to the fixture.
- * @param {string} name - Tool name.
- * @param {Record<string, unknown>} args - Tool arguments.
  */
-const call = async (client, name, args = {}) => {
+const call = async (
+  client: Client,
+  name: string,
+  args: Record<string, unknown> = {}
+) => {
   const result = z
     .looseObject({
       content: z.tuple([z.looseObject({ text: z.string() })]).rest(z.unknown()),
@@ -302,8 +318,7 @@ const call = async (client, name, args = {}) => {
   };
 };
 
-/** @param {string} method - Protocol method. */
-const direction = (method) => ({
+const direction = (method: string) => ({
   oneOf: [{ properties: { method: { enum: [method] } } }]
 });
 
@@ -567,7 +582,17 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
     });
     const { stdout } = await execa(
       "npm",
-      ["pack", "--json", "--ignore-scripts", "--pack-destination", directory],
+      [
+        "exec",
+        "--yes",
+        "--package=husky@^9.1.7",
+        "--",
+        "npm",
+        "pack",
+        "--json",
+        "--pack-destination",
+        directory
+      ],
       {
         cwd: path.dirname(serverPath),
         env: {
@@ -586,30 +611,35 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
       .parse(JSON.parse(stdout));
     for (const file of [
       "THIRD_PARTY_NOTICES.md",
-      "server.mjs",
-      "monitor.mjs",
-      "lib/monitor.mjs",
-      "lib/connection.mjs",
-      "lib/thread-tools.mjs",
-      "lib/mcp-tool.mjs",
-      "lib/native-session.mjs",
-      "lib/session-transport.mjs",
+      "dist/server.js",
+      "dist/monitor.js",
+      "dist/package.json",
+      "dist/lib/native-schema.js",
+      "dist/lib/monitor.js",
+      "dist/lib/connection.js",
+      "dist/lib/thread-tools.js",
+      "dist/lib/mcp-tool.js",
+      "dist/lib/native-session.js",
+      "dist/lib/session-transport.js",
       "skills/thread-control/SKILL.md",
       "skills/thread-control/assets/monitor.json",
       "skills/thread-control/references/monitor.md",
-      "lib/turn-tools.mjs",
-      "lib/thread-admin.mjs",
-      "lib/catalog.mjs",
-      "lib/policy.mjs",
-      "lib/queue.mjs",
-      "lib/turn.mjs",
-      "lib/schema.mjs"
+      "dist/lib/turn-tools.js",
+      "dist/lib/thread-admin.js",
+      "dist/lib/catalog.js",
+      "dist/lib/policy.js",
+      "dist/lib/queue.js",
+      "dist/lib/turn.js",
+      "dist/lib/schema.js"
     ]) {
       assert.ok(
         packed.files.some((entry) => entry.path === file),
         file
       );
     }
+    assert.ok(
+      packed.files.every(({ path: filename }) => !filename.endsWith(".ts"))
+    );
     const { client, requests } = await fixture(
       t,
       ({ message, reply }) => {
@@ -675,6 +705,52 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
     });
     assert.deepEqual(native.value, { fixture: "raw" });
     assert.deepEqual(requests.at(-1)?.params, { threadId: "fixture-thread" });
+    const monitorFixture = await socketFixture(t, ({ message, reply }) => {
+      reply(
+        message.method === "thread/read"
+          ? { thread: { name: "Fixture", status: { type: "idle" } } }
+          : { data: [] }
+      );
+    });
+    const installedMonitor = await execa(
+      "npm",
+      [
+        "exec",
+        "--yes",
+        "--install-links",
+        `--package=${path.join(directory, packed.filename)}`,
+        "--",
+        "codex-thread-monitor",
+        "--include-initial",
+        "--status",
+        "idle",
+        "--thread",
+        "fixture-thread",
+        "--timeout-seconds",
+        "1"
+      ],
+      {
+        cwd: directory,
+        env: {
+          ...process.env,
+          CODEX_APP_SERVER_SOCKET: monitorFixture.socket,
+          NODE_USE_SYSTEM_CA: "1",
+          npm_config_cache: path.join(directory, "npm-cache")
+        }
+      }
+    );
+    const event = z.looseObject({ status: z.string(), threadId: z.string() });
+    assert.deepEqual(event.parse(JSON.parse(installedMonitor.stdout)), {
+      event: "threadStatus",
+      previous: null,
+      status: "idle",
+      threadId: "fixture-thread",
+      threadName: "Fixture"
+    });
+    assert.deepEqual(
+      monitorFixture.requests.map(({ method }) => method),
+      ["initialize", "initialize", "thread/turns/list", "thread/read"]
+    );
   });
 
   void test("accepts a null MCP tool error flag", async (t) => {
@@ -1257,8 +1333,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
     );
   });
 
-  /** @type {[string, Record<string, unknown>][]} */
-  const invalidCatalogs = [
+  const invalidCatalogs: [string, Record<string, unknown>][] = [
     [
       "$defs",
       {
@@ -1573,8 +1648,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
   void test("queues active sends and delivers fresh turns in order, buffering early completion", async (t) => {
     const threadId = "fixture-queued";
     const turns = [{ id: "active", status: "inProgress" }];
-    /** @type {string[]} */
-    const delivered = [];
+    const delivered: string[] = [];
     const { client, connections, requests } = await fixture(
       t,
       ({ message, reply, ws }) => {
@@ -1653,8 +1727,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
   void test("generated queue batches deliver acknowledged messages once in insertion order", async (t) => {
     let threadId = "";
     let turns = [{ id: "active", status: "inProgress" }];
-    /** @type {string[]} */
-    let delivered = [];
+    let delivered: string[] = [];
     let delayedCompletion = false;
     const { client, connections } = await fixture(
       t,
@@ -1686,8 +1759,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
     const cases = [1, 2, 3, 5, 8].flatMap((size) =>
       [false, true].map((delayed) => ({ delayed, size }))
     );
-    /** @param {number} batch - Generated batch index. */
-    const checkBatch = async (batch) => {
+    const checkBatch = async (batch: number) => {
       const { delayed, size } = cases[batch];
       delayedCompletion = delayed;
       threadId = `generated-queue-${size}-${delayed}`;
@@ -1697,8 +1769,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
         { length: size },
         (_, index) => `message-${size}-${index}`
       );
-      /** @param {number} index - Message index. */
-      const enqueue = async (index) => {
+      const enqueue = async (index: number) => {
         const result = await call(client, "codex_send", {
           text: messages[index],
           thread_id: threadId
@@ -1720,8 +1791,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
         );
       }
       if (delayedCompletion) {
-        /** @param {number} index - Started message index. */
-        const complete = async (index) => {
+        const complete = async (index: number) => {
           await t.waitFor(
             () => {
               assert.equal(delivered.length, index + 1);
@@ -1890,8 +1960,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
       { length: 129 },
       (_, index) => `thread-${index}`
     );
-    /** @param {number} index - Thread index. */
-    const refuseThread = async (index) => {
+    const refuseThread = async (index: number) => {
       if (index < threadIds.length) {
         const threadId = threadIds[index];
         const interrupted = index === threadIds.length - 1 || index % 2 === 1;
@@ -1985,8 +2054,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
     assert.ok(!requests.some((request) => request.method === "turn/start"));
   });
 
-  /** @type {[string, Record<string, unknown>][]} */
-  const uncertainThreads = [
+  const uncertainThreads: [string, Record<string, unknown>][] = [
     ["missing status", { turns: [{ id: "active" }] }],
     ["missing thread data", {}],
     ["active string status", { status: "active", turns: [] }],
@@ -2033,8 +2101,9 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
   }
 
   void test("queue waits for known turn status and retains a started receipt", async (t) => {
-    /** @type {{id: string, status?: string}[]} */
-    let turns = [{ id: "active", status: "inProgress" }];
+    let turns: { id: string; status?: string }[] = [
+      { id: "active", status: "inProgress" }
+    ];
     let started = 0;
     let reads = 0;
     const { client, connections } = await fixture(t, ({ message, reply }) => {
@@ -2630,10 +2699,8 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
   });
 
   void test("keeps interactive command follow-ups on their originating connection and returns streamed output", async (t) => {
-    /** @type {WebSocket | undefined} */
-    let owner;
-    /** @type {((value: unknown) => void) | undefined} */
-    let complete;
+    let owner: WebSocket | undefined;
+    let complete: ((value: unknown) => void) | undefined;
     const { client, connections, requests } = await fixture(
       t,
       ({ message, reply, ws }) => {
@@ -2760,8 +2827,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
   });
 
   void test("keeps watch notifications live until native unwatch or MCP transport closure", async (t) => {
-    /** @type {WebSocket | undefined} */
-    let owner;
+    let owner: WebSocket | undefined;
     const { client, connections } = await fixture(
       t,
       ({ message, reply, ws }) => {
@@ -2844,13 +2910,14 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
 });
 
 /**
- * Run the packaged monitor against the same fixture socket and decode line events.
- * @param {import("node:test").TestContext} context - Test owner of the monitor.
- * @param {string} socket - Fixture socket path.
- * @param {string[]} args - Monitor command arguments.
- * @param {NodeJS.ProcessEnv} env - Additional environment variables.
+ * Run the source monitor against the same fixture socket and decode line events.
  */
-const monitor = (context, socket, args, env = {}) => {
+const monitor = (
+  context: import("node:test").TestContext,
+  socket: string,
+  args: string[],
+  env: NodeJS.ProcessEnv = {}
+) => {
   const child = spawn(process.execPath, [monitorPath, ...args], {
     env: {
       ...process.env,
@@ -2861,18 +2928,15 @@ const monitor = (context, socket, args, env = {}) => {
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
-  /** @type {Record<string, unknown>[]} */
-  const events = [];
+  const events: Record<string, unknown>[] = [];
   let buffered = "";
-  /** @param {Buffer} bytes - Monitor output. */
-  const readOutput = (bytes) => {
+  const readOutput = (bytes: Buffer) => {
     buffered += bytes.toString();
     const lines = buffered.split("\n");
     buffered = lines.pop() ?? "";
     events.push(
       ...lines.filter(Boolean).map((line) => {
-        /** @type {unknown} */
-        const event = JSON.parse(line);
+        const event: unknown = JSON.parse(line);
         assert.ok(
           event !== null && typeof event === "object" && !Array.isArray(event)
         );
@@ -2892,10 +2956,9 @@ const monitor = (context, socket, args, env = {}) => {
 };
 
 await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
-  void test("packaged monitor watches configured native transitions and classifies terminal failures", async (t) => {
+  void test("source monitor watches configured native transitions and classifies terminal failures", async (t) => {
     let status = "active";
-    /** @type {FixtureTurn} */
-    let turn = { id: "initial", status: "inProgress" };
+    let turn: FixtureTurn = { id: "initial", status: "inProgress" };
     const { connections, requests, socket } = await socketFixture(
       t,
       ({ message, reply }) => {
@@ -2920,8 +2983,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
         timeout: 2000
       }
     );
-    /** @param {Record<string, unknown>} params - Notification parameters. */
-    const notify = (params) => {
+    const notify = (params: Record<string, unknown>) => {
       for (const ws of connections) {
         ws.send(JSON.stringify({ method: "thread/status/changed", params }));
       }
@@ -3004,8 +3066,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
   });
 
   void test("monitor excludes unloaded activity while preserving subsequent failure events", async (t) => {
-    /** @type {{id: string, status: string, error: object} | null} */
-    let turn = null;
+    let turn: { id: string; status: string; error: object } | null = null;
     const { connections, requests, socket } = await socketFixture(
       t,
       ({ message, reply }) => {
@@ -3358,15 +3419,13 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
 
   for (const includePreviousNotLoaded of [false, true]) {
     void test(`monitor selects unloaded terminal successes separately and retains fresh failures: ${includePreviousNotLoaded}`, async (t) => {
-      /** @type {FixtureTurn} */
-      let turn = {
+      let turn: FixtureTurn = {
         completedAt: 0,
         id: "historical",
         items: [],
         status: "failed"
       };
-      /** @type {string | null} */
-      let name = null;
+      let name: string | null = null;
       const { connections, requests, socket } = await socketFixture(
         t,
         ({ message, reply }) => {
@@ -3394,8 +3453,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
       await delay(30);
       assert.equal(events.length, 0);
       const [owner] = connections;
-      /** @param {unknown} completed - Completed turn. */
-      const terminal = (completed) => {
+      const terminal = (completed: unknown) => {
         owner.send(
           JSON.stringify({
             method: "turn/completed",
@@ -3502,8 +3560,11 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
   for (const selection of ["*", "watched"]) {
     for (const explicitStatuses of [false, true]) {
       void test(`monitor hides unloaded activity but preserves a real completion: ${selection}/${explicitStatuses}`, async (t) => {
-        /** @type {FixtureTurn} */
-        let turn = { completedAt: 0, id: "historical", status: "failed" };
+        let turn: FixtureTurn = {
+          completedAt: 0,
+          id: "historical",
+          status: "failed"
+        };
         const { connections, requests, socket } = await socketFixture(
           t,
           ({ message, reply }) => {
@@ -3544,8 +3605,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
         await delay(30);
         assert.equal(events.length, 0);
         const [owner] = connections;
-        /** @param {string} type - Status type. */
-        const notify = (type) => {
+        const notify = (type: string) => {
           owner.send(
             JSON.stringify({
               method: "thread/status/changed",
@@ -3633,8 +3693,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
       items: [],
       status: "completed"
     };
-    /** @type {FixtureTurn} */
-    let latest = baseline;
+    let latest: FixtureTurn = baseline;
     const { connections, requests, socket } = await socketFixture(
       t,
       ({ message, reply, connections: targets }) => {
@@ -4254,16 +4313,12 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
   for (const phase of ["initialize", "thread/resume", "thread/read"]) {
     for (const name of ["codex_send", "codex_steer"]) {
       void test(`queued ${name} cancellation during ${phase} prevents late delivery and releases its writer`, async (t) => {
-        /** @type {WebSocket | undefined} */
-        let original;
-        /** @type {WebSocket | undefined} */
-        let queued;
-        /** @type {(() => void) | undefined} */
-        let lateReply;
+        let original: WebSocket | undefined;
+        let queued: WebSocket | undefined;
+        let lateReply: (() => void) | undefined;
         let paused = true;
         const turns = [{ id: "active", status: "inProgress" }];
-        /** @type {string[]} */
-        const delivered = [];
+        const delivered: string[] = [];
         const { client, connections, requests } = await fixture(
           t,
           ({ message, reply, ws }) => {
@@ -4380,15 +4435,12 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
 
   for (const name of ["codex_send", "codex_steer"]) {
     void test(`queued ${name} cancellation preserves acknowledged messages and accepts ordered fresh work`, async (t) => {
-      /** @type {WebSocket | undefined} */
-      let queueSocket;
+      let queueSocket: WebSocket | undefined;
       let initializes = 0;
       let paused = false;
-      /** @type {(() => void) | undefined} */
-      let lateReply;
+      let lateReply: (() => void) | undefined;
       const turns = [{ id: "active", status: "inProgress" }];
-      /** @type {string[]} */
-      const delivered = [];
+      const delivered: string[] = [];
       const { client, connections, requests } = await fixture(
         t,
         ({ message, reply, ws }) => {
@@ -4535,15 +4587,12 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
   }
 
   void test("enqueue cancellation preserves a completion wake for acknowledged messages", async (t) => {
-    /** @type {WebSocket | undefined} */
-    let queueSocket;
+    let queueSocket: WebSocket | undefined;
     let initializes = 0;
     let paused = false;
-    /** @type {(() => void) | undefined} */
-    let lateReply;
+    let lateReply: (() => void) | undefined;
     const turns = [{ id: "active", status: "inProgress" }];
-    /** @type {string[]} */
-    const delivered = [];
+    const delivered: string[] = [];
     const { client, connections } = await fixture(
       t,
       ({ message, reply, ws }) => {
@@ -4637,14 +4686,11 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
 
   for (const name of ["codex_send", "codex_steer"]) {
     void test(`queued ${name} cancellation preserves an already-started turn without interruption or retry`, async (t) => {
-      /** @type {WebSocket | undefined} */
-      let queueSocket;
+      let queueSocket: WebSocket | undefined;
       let initializes = 0;
-      /** @type {(() => void) | undefined} */
-      let lateReply;
+      let lateReply: (() => void) | undefined;
       const turns = [{ id: "original", status: "inProgress" }];
-      /** @type {string[]} */
-      const delivered = [];
+      const delivered: string[] = [];
       const { client, connections, requests } = await fixture(
         t,
         ({ message, reply, ws }) => {
@@ -4758,8 +4804,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
     for (const name of ["codex_send", "codex_steer", "codex_interrupt"]) {
       void test(`curated ${name} cancellation during ${phase} prevents writes and releases its writer`, async (t) => {
         let paused = true;
-        /** @type {(() => void) | undefined} */
-        let lateReply;
+        let lateReply: (() => void) | undefined;
         const { client, connections, requests } = await fixture(
           t,
           ({ message, reply }) => {
@@ -4922,8 +4967,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
 
   void test("monitor falls back to thread/read turns when paginated turns are unsupported", async (t) => {
     let status = "active";
-    /** @type {FixtureTurn} */
-    let turn = { id: "initial", status: "inProgress" };
+    let turn: FixtureTurn = { id: "initial", status: "inProgress" };
     const { connections, requests, socket } = await socketFixture(
       t,
       ({ message, reply, ws }) => {
@@ -4976,8 +5020,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
       1
     );
     assert.ok(events.every((event) => event.event === "threadStatus"));
-    /** @param {string} type - Status type. */
-    const notify = (type) => {
+    const notify = (type: string) => {
       for (const ws of connections) {
         ws.send(
           JSON.stringify({
@@ -5198,8 +5241,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
 
   void test("monitor retries an empty-rollout thread on its next status change", async (t) => {
     let empty = true;
-    /** @type {FixtureTurn} */
-    let turn = { id: "initial", status: "inProgress" };
+    let turn: FixtureTurn = { id: "initial", status: "inProgress" };
     const { connections, requests, socket } = await socketFixture(
       t,
       ({ message, reply, ws }) => {
@@ -5586,8 +5628,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
           monitorParams.parse(request.params).includeTurns === false
       ).length;
     assert.equal(statusReads(), 1);
-    /** @param {string} type - Status type. */
-    const notify = (type) => {
+    const notify = (type: string) => {
       for (const ws of connections) {
         ws.send(
           JSON.stringify({
@@ -5654,8 +5695,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
 
   void test("monitor bounds deferred threads and drops the oldest entry past the cap", async (t) => {
     const refusing = new Set(["oldest"]);
-    /** @type {(string | undefined)[]} */
-    const turnRequests = [];
+    const turnRequests: (string | undefined)[] = [];
     const { connections, socket } = await socketFixture(
       t,
       ({ message, reply, ws }) => {
@@ -5697,10 +5737,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
         timeout: 2000
       }
     );
-    /** @param {string} threadId - Thread ID.
-     * @param {string} type - Status type.
-     */
-    const notify = (threadId, type) => {
+    const notify = (threadId: string, type: string) => {
       for (const ws of connections) {
         ws.send(
           JSON.stringify({
@@ -5753,8 +5790,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
 
   void test("monitor drops a deferred thread when it leaves daemon memory", async (t) => {
     let refused = true;
-    /** @type {(string | undefined)[]} */
-    const turnRequests = [];
+    const turnRequests: (string | undefined)[] = [];
     const { connections, socket } = await socketFixture(
       t,
       ({ message, reply, ws }) => {
@@ -5799,8 +5835,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
       }
     );
     assert.equal(turnRequests.length, 1);
-    /** @param {string} type - Status type. */
-    const notify = (type) => {
+    const notify = (type: string) => {
       for (const ws of connections) {
         ws.send(
           JSON.stringify({
@@ -5853,8 +5888,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
 
   void test("default wildcard monitor silently baselines history and emits named post-launch transitions and terminals", async (t) => {
     let name = "Synthetic initial name";
-    /** @type {FixtureTurn} */
-    let turn = {
+    let turn: FixtureTurn = {
       id: "old-failure",
       itemsView: "notLoaded",
       status: "failed"
@@ -5923,10 +5957,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
     await delay(30);
     assert.equal(events.length, 0);
     const [owner] = connections;
-    /** @param {string} threadId - Thread ID.
-     * @param {string} type - Status type.
-     */
-    const status = (threadId, type) => {
+    const status = (threadId: string, type: string) => {
       owner.send(
         JSON.stringify({
           method: "thread/status/changed",
@@ -6499,8 +6530,7 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
       assert.ok(requests.some(({ method }) => method === "thread/read"));
     });
     const [owner] = connections;
-    /** @param {unknown} turn - Completed turn. */
-    const terminal = (turn) => {
+    const terminal = (turn: unknown) => {
       owner.send(
         JSON.stringify({
           method: "turn/completed",
@@ -6792,11 +6822,9 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
   for (const selection of ["explicit", "wildcard"]) {
     for (const includeUnnamed of [false, true]) {
       void test(`monitor preserves named events and selects unnamed threads explicitly: ${selection}/${includeUnnamed}`, async (t) => {
-        /** @type {string | null} */
-        let unnamedName = null;
+        let unnamedName: string | null = null;
         let holdUnnamedRead = false;
-        /** @type {(() => void) | undefined} */
-        let releaseUnnamedRead;
+        let releaseUnnamedRead: (() => void) | undefined;
         const { connections, requests, socket } = await socketFixture(
           t,
           ({ message, reply }) => {
@@ -6850,20 +6878,16 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
         assert.equal(events.length, 0);
         holdUnnamedRead = !includeUnnamed;
         const [owner] = connections;
-        /** @param {string} threadId - Thread ID.
-         * @param {string} method - Notification method.
-         * @param {Record<string, unknown>} params - Notification parameters.
-         */
-        const notify = (threadId, method, params) => {
+        const notify = (
+          threadId: string,
+          method: string,
+          params: Record<string, unknown>
+        ) => {
           owner.send(
             JSON.stringify({ method, params: { ...params, threadId } })
           );
         };
-        /** @param {string} threadId - Thread ID.
-         * @param {string} id - Turn ID.
-         * @param {string} status - Turn status.
-         */
-        const complete = (threadId, id, status) => {
+        const complete = (threadId: string, id: string, status: string) => {
           notify(threadId, "turn/completed", {
             turn: {
               id,

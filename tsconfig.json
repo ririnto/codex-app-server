@@ -4,8 +4,10 @@
     "allowImportingTsExtensions": true,
     "allowJs": true,
     "checkJs": true,
+    "erasableSyntaxOnly": true,
     "noEmit": true
   },
+  "exclude": ["dist", "node_modules"],
   "include": [
     "**/*.cjs",
     "**/.*/**/*.cjs",
