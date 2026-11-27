@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { withClient } from "./connection.mjs";
+import { withClient } from "#lib/connection";
 
 const READ_ONLY = { openWorldHint: false, readOnlyHint: true };
 
@@ -26,9 +26,10 @@ const GOAL_STATUSES = [
 
 /**
  * Register thread fork, rename, goal, loaded-list, and compaction tools on the MCP server.
- * @param {import("./types.d.ts").ToolRegistry} server - Curated tool registry.
  */
-export const registerThreadAdminTools = (server) => {
+export const registerThreadAdminTools = (
+  server: import("./types.d.ts").ToolRegistry
+) => {
   server.registerTool(
     "codex_loaded",
     {

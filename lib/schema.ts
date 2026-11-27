@@ -43,25 +43,17 @@ const PROTOCOLS = {
   serverNotification: "ServerNotification.json",
   serverRequest: "ServerRequest.json"
 };
-/** @type {{key: string, value: Awaited<ReturnType<typeof generate>>} | undefined} */
-let cached;
-/** @type {{key: string, promise: ReturnType<typeof generate>} | undefined} */
-let pending;
+let cached:
+  | { key: string; value: Awaited<ReturnType<typeof generate>> }
+  | undefined;
+let pending: { key: string; promise: ReturnType<typeof generate> } | undefined;
 
-/**
- * @param {string} key - JSON property name.
- * @param {unknown} value - JSON property value.
- */
-const rewriteReference = (key, value) =>
+const rewriteReference = (key: string, value: unknown) =>
   key === "$ref" && typeof value === "string"
     ? value.replace("#/definitions/", "#/$defs/")
     : value;
 
-/**
- * @param {string} binary - Codex executable.
- * @param {string} version - Codex version.
- */
-const generate = async (binary, version) => {
+const generate = async (binary: string, version: string) => {
   const directory = await mkdtemp(path.join(tmpdir(), "local-codex-schema-"));
   let result;
   try {
@@ -74,8 +66,7 @@ const generate = async (binary, version) => {
     const protocols = await Promise.all(
       Object.entries(PROTOCOLS).map(async ([kind, file]) => {
         const source = await readFile(path.join(directory, file), "utf-8");
-        /** @type {unknown} */
-        const parsed = JSON.parse(source, rewriteReference);
+        const parsed: unknown = JSON.parse(source, rewriteReference);
         const schema = generatedSchema.parse(parsed);
         const defs = schema.definitions ?? schema.$defs ?? {};
         const entries = schema.oneOf.map((entry) => {
@@ -101,14 +92,15 @@ const generate = async (binary, version) => {
     for (const { kind, source } of protocols) {
       hash.update(kind).update(source);
     }
-    /** @type {Map<string, ReturnType<AjvJsonSchemaValidator["getValidator"]>>} */
-    const validators = new Map();
+    const validators = new Map<
+      string,
+      ReturnType<AjvJsonSchemaValidator["getValidator"]>
+    >();
     result = {
       hash: hash.digest("hex"),
       protocols: Object.fromEntries(
         protocols.map(({ entries, kind }) => {
-          /** @type {[string, typeof entries]} */
-          const pair = [kind, entries];
+          const pair: [string, typeof entries] = [kind, entries];
           return pair;
         })
       ),
@@ -164,13 +156,11 @@ export const loadProtocol = async ({ refresh = false } = {}) => {
   return result;
 };
 
-/**
- * @param {Record<string, boolean | Record<string, unknown>>} definitions - Native definitions.
- * @param {string} reference - Native schema reference.
- * @param {boolean} [fullReference] - Include the full root reference in errors.
- * @returns {[string, boolean | Record<string, unknown>]} Definition name and value.
- */
-const lookupDefinition = (definitions, reference, fullReference = false) => {
+const lookupDefinition = (
+  definitions: Record<string, boolean | Record<string, unknown>>,
+  reference: string,
+  fullReference = false
+): [string, boolean | Record<string, unknown>] => {
   const name = reference.replace("#/$defs/", "");
   if (!Object.hasOwn(definitions, name)) {
     throw new Error(
@@ -180,15 +170,12 @@ const lookupDefinition = (definitions, reference, fullReference = false) => {
   return [name, definitions[name]];
 };
 
-/**
- * @param {Record<string, unknown>} root - Root parameter schema.
- * @param {Record<string, boolean | Record<string, unknown>>} definitions - Native definitions.
- */
-const reachableDefinitions = (root, definitions) => {
-  /** @type {Record<string, boolean | Record<string, unknown>>} */
-  const defs = {};
-  /** @type {unknown[]} */
-  const queue = [root];
+const reachableDefinitions = (
+  root: Record<string, unknown>,
+  definitions: Record<string, boolean | Record<string, unknown>>
+) => {
+  const defs: Record<string, boolean | Record<string, unknown>> = {};
+  const queue: unknown[] = [root];
   for (const value of queue) {
     if (value !== null && typeof value === "object") {
       if ("$ref" in value && typeof value.$ref !== "string") {
@@ -218,10 +205,8 @@ const reachableDefinitions = (root, definitions) => {
 /**
  * Preserve a method's native parameter schema with only its reachable definitions.
  * Resolve root references and wrap non-object parameters in a native-validated params argument.
- * @param {unknown} params - Native parameter schema.
- * @param {boolean} [required] - Whether the method requires parameters.
  */
-export const parameterSchema = (params, required = true) => {
+export const parameterSchema = (params: unknown, required = true) => {
   if (params === undefined || params === null || params === false) {
     return {
       inputSchema: {
@@ -276,10 +261,8 @@ export const parameterSchema = (params, required = true) => {
 /**
  * Validate a native client request without changing or stripping its parameters.
  * Refuse other protocol directions and unknown methods before connecting.
- * @param {string} method - Native client request method.
- * @param {unknown} params - Native request parameters.
  */
-export const validateRequest = async (method, params) => {
+export const validateRequest = async (method: string, params: unknown) => {
   const { protocols, validators } = await loadProtocol();
   const entry = protocols.clientRequest.find((item) => item.method === method);
   if (!entry) {

@@ -89,16 +89,7 @@ const parseReasons = new Set([
 const decimalNumber =
   /^[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$/u;
 
-const parseYaml = (
-  /**
-   * @type {string}
-   */
-  source,
-  /**
-   * @type {string}
-   */
-  file
-) => {
+const parseYaml = (source: string, file: string) => {
   let reason = "invalid YAML syntax";
   try {
     const events = parseEvents(source, {});
@@ -141,33 +132,29 @@ const parseYaml = (
   }
 };
 
-/**
- * @typedef {NonNullable<ReturnType<typeof eventsToAst>[number]["contents"]>} YamlNode
- */
+type YamlNode = NonNullable<ReturnType<typeof eventsToAst>[number]["contents"]>;
 
-/**
- * @typedef {{name: string, node: YamlNode, line: number, uses: number[]}} Anchor
- */
+interface Anchor {
+  name: string;
+  node: YamlNode;
+  line: number;
+  uses: number[];
+}
 
-/**
- * @param {ReturnType<typeof parseEvents>} events - Events in YAML source order.
- */
 const indexSyntax = (
-  events,
-  /**
-   * @type {string}
-   */
-  source
+  events: ReturnType<typeof parseEvents>,
+  source: string
 ) => {
   const documents = eventsToAst(events, { schema: CORE_SCHEMA, source });
   const nodes = events.filter((event) => "anchorStart" in event).values();
   const breaks = source.matchAll(/\r\n|\r|\n/gu);
   let nextBreak = breaks.next().value;
   let line = 1;
-  /** @type {Map<string, Anchor>} */
-  const definitions = new Map();
-  /** @type {Map<YamlNode, {anchor: Anchor | null, line: number, node: YamlNode}>} */
-  const locations = new Map();
+  const definitions = new Map<string, Anchor>();
+  const locations = new Map<
+    YamlNode,
+    { anchor: Anchor | null; line: number; node: YamlNode }
+  >();
   visit(documents, (node) => {
     const event = nodes.next().value;
     if (event === undefined) {
@@ -196,12 +183,11 @@ const indexSyntax = (
   return { locations, rootNode: documents[0]?.contents ?? null };
 };
 
-/**
- * @param {ReturnType<typeof indexSyntax>["locations"]} locations - Index from the same document as the parent node.
- * @param {YamlNode | undefined} node - Resolved parent node.
- * @param {number | string} segment - Use a string for a mapping key, even when it looks numeric.
- */
-const childAt = (locations, node, segment) => {
+const childAt = (
+  locations: ReturnType<typeof indexSyntax>["locations"],
+  node: YamlNode | undefined,
+  segment: number | string
+) => {
   if (node?.kind === "mapping") {
     const entry = node.items.find(({ key }) => {
       const resolved = locations.get(key)?.anchor?.node ?? key;
@@ -222,11 +208,12 @@ const childAt = (locations, node, segment) => {
   return { key: null, value: null };
 };
 
-/** @type {(syntax: ReturnType<typeof indexSyntax>, segments: (number | string)[]) => ReturnType<typeof childAt>[]} */
-const traceNode = ({ locations, rootNode }, segments) => {
+const traceNode: (
+  syntax: ReturnType<typeof indexSyntax>,
+  segments: (number | string)[]
+) => ReturnType<typeof childAt>[] = ({ locations, rootNode }, segments) => {
   let current = rootNode === null ? null : locations.get(rootNode);
-  /** @type {ReturnType<typeof childAt>[]} */
-  const trail = [{ key: null, value: current }];
+  const trail: ReturnType<typeof childAt>[] = [{ key: null, value: current }];
   for (const segment of segments) {
     const child = childAt(
       locations,
@@ -239,10 +226,7 @@ const traceNode = ({ locations, rootNode }, segments) => {
   return trail;
 };
 
-/**
- * @param {ReturnType<typeof traceNode>} trail - Input path including its original YAML nodes.
- */
-const inspectInput = (trail) => {
+const inspectInput = (trail: ReturnType<typeof traceNode>) => {
   const terminal = trail.at(-1);
   const value = terminal?.value;
   const key = terminal?.key;
@@ -269,9 +253,8 @@ const inspectInput = (trail) => {
 
 /**
  * .NET G15 rounds the exact binary value to nearest, with ties to even.
- * @param {number} magnitude - Positive finite double.
  */
-const roundSignificand = (magnitude) => {
+const roundSignificand = (magnitude: number) => {
   const exponent = Number(magnitude.toExponential().split("e")[1]);
   const bits = new DataView(new ArrayBuffer(8));
   bits.setFloat64(0, magnitude);
@@ -300,8 +283,10 @@ const roundSignificand = (magnitude) => {
   };
 };
 
-/** @type {(value: string, tag: "tag:yaml.org,2002:int" | "tag:yaml.org,2002:float") => string | null} */
-const readRunnerNumber = (value, tag) => {
+const readRunnerNumber: (
+  value: string,
+  tag: "tag:yaml.org,2002:int" | "tag:yaml.org,2002:float"
+) => string | null = (value, tag) => {
   const isYamlIntegerTag = tag === "tag:yaml.org,2002:int";
   if (isYamlIntegerTag && /^0[ox]/u.test(value)) {
     const whole = Number(value);
@@ -318,8 +303,7 @@ const readRunnerNumber = (value, tag) => {
   return decimalNumber.test(value) ? formatRunnerNumber(Number(value)) : null;
 };
 
-/** @type {(value: number) => string} */
-const formatRunnerNumber = (value) => {
+const formatRunnerNumber: (value: number) => string = (value) => {
   if (Object.is(value, -0)) {
     return "-0";
   }
@@ -347,10 +331,7 @@ const formatRunnerNumber = (value) => {
   return `${sign}${digits.slice(0, split)}.${digits.slice(split)}`;
 };
 
-/**
- * @param {YamlNode | undefined} node - Resolved node from the workflow or metadata.
- */
-const readRunnerScalar = (node) => {
+const readRunnerScalar = (node: YamlNode | undefined) => {
   if (node?.kind !== "scalar") {
     return null;
   }
@@ -386,12 +367,10 @@ const readRunnerScalar = (node) => {
   return null;
 };
 
-/**
- * @param {ReturnType<typeof indexSyntax>} syntax - YAML locations for the approved metadata.
- * @param {z.infer<typeof metadataSchema>} metadata - Approved inputs by exact action ref.
- * @returns {Map<string, Map<string, string>>} Runner readings by reference and input.
- */
-const indexDefaults = (syntax, metadata) =>
+const indexDefaults = (
+  syntax: ReturnType<typeof indexSyntax>,
+  metadata: z.infer<typeof metadataSchema>
+): Map<string, Map<string, string>> =>
   new Map(
     Object.entries(metadata).map(([ref, { inputs }]) => [
       ref,
@@ -413,8 +392,7 @@ const indexDefaults = (syntax, metadata) =>
     ])
   );
 
-/** @type {(event: unknown) => boolean} */
-const hasCaller = (event) => {
+const hasCaller: (event: unknown) => boolean = (event) => {
   const parsed = triggers.safeParse(event);
   if (!parsed.success) {
     return true;
@@ -427,11 +405,10 @@ const hasCaller = (event) => {
     : Object.hasOwn(parsed.data, "workflow_call");
 };
 
-/**
- * @param {unknown} step - First step of the same job.
- * @param {string | null | undefined} checkoutCommit - Approved checkout revision.
- */
-const checksOutWorkflow = (step, checkoutCommit) => {
+const checksOutWorkflow = (
+  step: unknown,
+  checkoutCommit: string | null | undefined
+) => {
   const checkout = workflowCheckout.safeParse(step);
   if (!checkout.success || typeof checkoutCommit !== "string") {
     return false;
@@ -445,15 +422,14 @@ const checksOutWorkflow = (step, checkoutCommit) => {
   );
 };
 
-/**
- * @param {string} file - Relative workflow path for diagnostics.
- * @param {ReturnType<typeof inspectInput>} input - Include the original alias use so the finding can point to it.
- * @param {string} name - Action input name as spelled in the workflow.
- * @param {string} ref - Exact action reference.
- * @param {string[]} actions - Actions sharing the input mapping.
- * @param {boolean} defaultsAgree - Every shared action has the same approved default.
- */
-const inputDiagnostic = (file, input, name, ref, actions, defaultsAgree) => {
+const inputDiagnostic = (
+  file: string,
+  input: ReturnType<typeof inspectInput>,
+  name: string,
+  ref: string,
+  actions: string[],
+  defaultsAgree: boolean
+) => {
   const { aliasLine, anchors, line, ownAnchors, valueIsAlias } = input;
   const linked = [...anchors].filter((anchor) => anchor.uses.length > 0);
   const locations = linked.map((anchor) => ({
@@ -516,21 +492,11 @@ const inputDiagnostic = (file, input, name, ref, actions, defaultsAgree) => {
   };
 };
 
-/**
- * @param {string} file - Relative workflow path for the review report.
- * @param {number} line - Line of the reference or its alias use.
- */
 const localReview = (
-  file,
-  /**
-   * @type {string}
-   */
-  ref,
-  line,
-  /**
-   * @type {"workspace" | "metadata"}
-   */
-  reason
+  file: string,
+  ref: string,
+  line: number,
+  reason: "workspace" | "metadata"
 ) => ({
   file,
   kind: "local-action-review",
@@ -540,19 +506,12 @@ const localReview = (
   ref
 });
 
-/**
- * @param {string} filename - Can be absolute because diagnostics use `file`.
- * @param {string} file - Relative workflow path for diagnostics.
- * @param {ReturnType<typeof indexDefaults>} defaults - Keys use exact action references and lowercase input names.
- * @param {string | null | undefined} checkoutCommit - Approved checkout revision.
- * @param {boolean} sameTree - The workflow and approval file are in the same checkout.
- */
 const validateWorkflowActionDefaults = (
-  filename,
-  file,
-  defaults,
-  checkoutCommit,
-  sameTree
+  filename: string,
+  file: string,
+  defaults: ReturnType<typeof indexDefaults>,
+  checkoutCommit: string | null | undefined,
+  sameTree: boolean
 ) => {
   const document = parseYaml(readFileSync(filename, "utf-8"), file);
   if (document.error !== undefined) {
@@ -563,8 +522,7 @@ const validateWorkflowActionDefaults = (
     return [];
   }
   const syntax = indexSyntax(document.events, document.source);
-  /** @type {ReturnType<typeof localReview>[]} */
-  const reviews = [];
+  const reviews: ReturnType<typeof localReview>[] = [];
   const steps = Object.entries(parsed.data.jobs).flatMap(
     ([job, { env, steps: jobSteps = [] }]) =>
       jobSteps.flatMap((step, index) => {
@@ -640,16 +598,20 @@ const validateWorkflowActionDefaults = (
       });
     }
   );
-  /** @type {(ReturnType<typeof inputDiagnostic> | ReturnType<typeof localReview> | NonNullable<ReturnType<typeof parseYaml>["error"]>)[]} */
-  const findings = [...diagnostics, ...reviews];
+  const findings: (
+    | ReturnType<typeof inputDiagnostic>
+    | ReturnType<typeof localReview>
+    | NonNullable<ReturnType<typeof parseYaml>["error"]>
+  )[] = [...diagnostics, ...reviews];
   return findings;
 };
 
 const metadataFile = "rules/workflow-action-defaults.yaml";
 const workflowPath = ".github/workflows";
 
-/** @type {(findings: {column?: number, file: string, line: number, message: string}[]) => string} */
-const formatFindings = (findings) =>
+const formatFindings: (
+  findings: { column?: number; file: string; line: number; message: string }[]
+) => string = (findings) =>
   options.json === true
     ? JSON.stringify(findings)
     : findings

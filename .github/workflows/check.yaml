@@ -35,4 +35,4 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile --prod
-      - run: node --test tests/server.test.mjs
+      - run: node --test tests/server.test.ts

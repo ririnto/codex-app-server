@@ -1,14 +1,14 @@
 import { z } from "zod";
 
-import { withClient } from "./connection.mjs";
-import { nativeThread, threadRead } from "./native-schema.mjs";
+import { withClient } from "#lib/connection";
+import { nativeThread, threadRead } from "#lib/native-schema";
 import {
   enqueueMessage,
   isThreadIdle,
   queuedThread,
   withThreadWriter
-} from "./queue.mjs";
-import { startTurn } from "./turn.mjs";
+} from "#lib/queue";
+import { startTurn } from "#lib/turn";
 
 const READ_ONLY = { openWorldHint: false, readOnlyHint: true };
 const userMessage = z.looseObject({
@@ -47,9 +47,10 @@ const THREAD_SOURCE_KINDS = [
 
 /**
  * Return the role and text of a user or agent message item, or null for other items.
- * @param {z.infer<typeof import("./native-schema.mjs").nativeItem>} item - Native turn item.
  */
-const messageText = (item) => {
+const messageText = (
+  item: z.infer<typeof import("./native-schema.ts").nativeItem>
+) => {
   let message = null;
   if (item.type === "userMessage") {
     message = {
@@ -67,9 +68,10 @@ const messageText = (item) => {
 
 /**
  * Register thread inspection and authorized steering tools on the MCP server.
- * @param {import("./types.d.ts").ToolRegistry} server - Curated tool registry.
  */
-export const registerThreadTools = (server) => {
+export const registerThreadTools = (
+  server: import("./types.d.ts").ToolRegistry
+) => {
   server.registerTool(
     "codex_threads",
     {

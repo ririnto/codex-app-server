@@ -5,24 +5,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { load as yamlParser } from "js-yaml";
 
 const fieldIdPattern = /^[A-Za-z0-9_-]+$/u;
-/**
- * @param {unknown} value - Value to inspect.
- * @returns {value is Record<string, unknown>} Whether the value is a mapping.
- */
-const isMapping = (value) =>
+const isMapping = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
-/**
- * @param {unknown} value - Value to inspect.
- * @returns {value is string} Whether the value is a non-empty string.
- */
-const nonEmptyString = (value) =>
+const nonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.trim() !== "";
 
-/**
- * @param {Record<string, unknown>} form - Parsed form.
- * @param {(message: string) => number} report - Diagnostic receiver.
- */
-const validateTopLevel = (form, report) => {
+const validateTopLevel = (
+  form: Record<string, unknown>,
+  report: (message: string) => number
+) => {
   const { body, description, name } = form;
   for (const [key, value] of Object.entries({ description, name })) {
     if (!nonEmptyString(value)) {
@@ -43,13 +34,12 @@ const validateTopLevel = (form, report) => {
   }
 };
 
-/**
- * @param {unknown} id - Field identifier.
- * @param {string} fieldName - Field location.
- * @param {Set<string>} ids - Seen identifiers.
- * @param {(message: string) => number} report - Diagnostic receiver.
- */
-const validateFieldId = (id, fieldName, ids, report) => {
+const validateFieldId = (
+  id: unknown,
+  fieldName: string,
+  ids: Set<string>,
+  report: (message: string) => number
+) => {
   if (nonEmptyString(id)) {
     if (!fieldIdPattern.test(id)) {
       report(
@@ -66,13 +56,12 @@ const validateFieldId = (id, fieldName, ids, report) => {
   }
 };
 
-/**
- * @param {unknown} label - Field label.
- * @param {string} fieldName - Field location.
- * @param {Set<string>} labels - Seen labels.
- * @param {(message: string) => number} report - Diagnostic receiver.
- */
-const validateFieldLabel = (label, fieldName, labels, report) => {
+const validateFieldLabel = (
+  label: unknown,
+  fieldName: string,
+  labels: Set<string>,
+  report: (message: string) => number
+) => {
   if (nonEmptyString(label)) {
     const normalizedLabel = label.trim().toLowerCase();
     if (labels.has(normalizedLabel)) {
@@ -84,14 +73,13 @@ const validateFieldLabel = (label, fieldName, labels, report) => {
   }
 };
 
-/**
- * @param {unknown} field - Parsed field.
- * @param {number} index - Field index.
- * @param {Set<string>} ids - Seen identifiers.
- * @param {Set<string>} labels - Seen labels.
- * @param {(message: string) => number} report - Diagnostic receiver.
- */
-const validateTextarea = (field, index, ids, labels, report) => {
+const validateTextarea = (
+  field: unknown,
+  index: number,
+  ids: Set<string>,
+  labels: Set<string>,
+  report: (message: string) => number
+) => {
   const fieldName = `body[${index + 1}]`;
   if (!isMapping(field)) {
     report(`${fieldName} must be a mapping.`);
@@ -118,13 +106,10 @@ const validateTextarea = (field, index, ids, labels, report) => {
 
 /**
  * Validate the repository issue-form fields.
- * @param {unknown} form - Parsed issue form.
  */
-export const validateIssueForm = (form, source = "<form>") => {
-  /** @type {string[]} */
-  const errors = [];
-  /** @param {string} message - Validation error. */
-  const report = (message) => errors.push(`${source}: ${message}`);
+export const validateIssueForm = (form: unknown, source = "<form>") => {
+  const errors: string[] = [];
+  const report = (message: string) => errors.push(`${source}: ${message}`);
   if (!isMapping(form)) {
     return [`${source}: issue form must be a YAML mapping.`];
   }
@@ -133,21 +118,15 @@ export const validateIssueForm = (form, source = "<form>") => {
   if (!Array.isArray(body) || body.length === 0) {
     return errors;
   }
-  /** @type {Set<string>} */
-  const ids = new Set();
-  /** @type {Set<string>} */
-  const labels = new Set();
+  const ids = new Set<string>();
+  const labels = new Set<string>();
   for (const [index, field] of body.entries()) {
     validateTextarea(field, index, ids, labels, report);
   }
   return errors;
 };
 
-/**
- * @param {string} content - YAML source.
- * @param {string} source - Source name for diagnostics.
- */
-const parseIssueFormContent = (content, source) => {
+const parseIssueFormContent = (content: string, source: string) => {
   try {
     const form = yamlParser(content);
     return { errors: validateIssueForm(form, source), form, source };
@@ -169,9 +148,10 @@ const parseIssueFormContent = (content, source) => {
 
 /**
  * Validate issue forms together, including unique chooser names.
- * @param {{content: string, source: string}[]} forms - Issue form documents.
  */
-export const validateIssueForms = (forms) => {
+export const validateIssueForms = (
+  forms: { content: string; source: string }[]
+) => {
   const parsedForms = forms.map(({ content, source }) =>
     parseIssueFormContent(content, source)
   );

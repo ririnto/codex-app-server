@@ -14,11 +14,7 @@ const rawFrame = z.union([
   z.array(z.instanceof(Buffer))
 ]);
 
-/**
- * @param {import("ws").RawData} data - WebSocket frame data.
- * @returns {unknown} Parsed frame data.
- */
-const parseMessage = (data) => {
+const parseMessage = (data: import("ws").RawData): unknown => {
   try {
     let bytes;
     if (Buffer.isBuffer(data)) {
@@ -39,12 +35,18 @@ const parseMessage = (data) => {
  * An optional abort signal closes the socket even while initialization is pending.
  * An optional notification handler receives broadcasts during initialization as well as afterward.
  * An optional ingress observer records notification metadata before serialized dispatch.
- * @param {{observeNotification?: (message: object) => unknown, onNotification?: (message: object, observation: unknown) => void | Promise<void>, signal?: AbortSignal}} [options] - Connection options.
  */
 export const openClient = async ({
   observeNotification,
   onNotification,
   signal
+}: {
+  observeNotification?: (message: object) => unknown;
+  onNotification?: (
+    message: object,
+    observation: unknown
+  ) => void | Promise<void>;
+  signal?: AbortSignal;
 } = {}) => {
   signal?.throwIfAborted();
   const ws = new WebSocket("ws://localhost/", {
@@ -68,20 +70,14 @@ export const openClient = async ({
   });
   const events = new EventTarget();
   const closed = new AbortController();
-  /**
-   * @param {string} name - Event name.
-   * @param {unknown} detail - Event payload.
-   */
-  const emit = (name, detail) =>
+  const emit = (name: string, detail: unknown) =>
     events.dispatchEvent(new CustomEvent(name, { detail }));
-  /** @param {unknown} error - Connection failure. */
-  const fail = (error) => {
+  const fail = (error: unknown) => {
     if (!closed.signal.aborted) {
       closed.abort(error);
     }
   };
-  /** @param {unknown} message - JSON-RPC message. */
-  const send = async (message) => {
+  const send = async (message: unknown) => {
     try {
       await promisify(ws.send.bind(ws))(JSON.stringify(message));
     } catch (error) {
@@ -105,24 +101,20 @@ export const openClient = async ({
   });
   let nextId = 0;
   let notify = onNotification;
-  /** @type {WeakMap<object, unknown>} */
-  const ingress = new WeakMap();
-  /**
-   * @param {import("ws").RawData} data - Original frame data.
-   * @param {(message: object) => unknown} observe - Ingress observer.
-   */
-  const capture = (data, observe) => {
+  const ingress = new WeakMap<object, unknown>();
+  const capture = (
+    data: import("ws").RawData,
+    observe: (message: object) => unknown
+  ) => {
     const message = parseMessage(data);
     if (message !== null && typeof message === "object" && !("id" in message)) {
       ingress.set(data, observe(message));
     }
   };
-  /** @param {(message: object) => unknown} [observe] - Ingress observer. */
-  const subscribeIngress = (observe) => {
+  const subscribeIngress = (observe?: (message: object) => unknown) => {
     let unsubscribe;
     if (observe !== undefined) {
-      /** @param {import("ws").RawData} data - WebSocket frame. */
-      const listener = (data) => {
+      const listener = (data: import("ws").RawData) => {
         capture(data, observe);
       };
       ws.on("message", listener);
@@ -141,8 +133,7 @@ export const openClient = async ({
   const receive = async () => {
     try {
       for await (const [data] of messages) {
-        /** @type {unknown} */
-        const original = data;
+        const original: unknown = data;
         const frame = rawFrame.safeParse(original);
         if (
           frame.success &&
@@ -185,12 +176,11 @@ export const openClient = async ({
     throw closed.signal.reason;
   };
   const receiving = receive();
-  /**
-   * @param {string} method - Native method.
-   * @param {unknown} params - Native method parameters.
-   * @param {{signal?: AbortSignal}} [options] - Request cancellation.
-   */
-  const request = async (method, params, { signal: requestAbort } = {}) => {
+  const request = async (
+    method: string,
+    params: unknown,
+    { signal: requestAbort }: { signal?: AbortSignal } = {}
+  ) => {
     closed.signal.throwIfAborted();
     requestAbort?.throwIfAborted();
     nextId += 1;
@@ -200,8 +190,7 @@ export const openClient = async ({
       closed.signal,
       ...(requestAbort ? [requestAbort] : [])
     ]);
-    /** @type {unknown} */
-    let result;
+    let result: unknown;
     try {
       const [response] = await Promise.all([
         once(events, `response:${id}`, { signal: requestSignal }),
@@ -256,10 +245,13 @@ export const openClient = async ({
         ws.close();
       },
       events,
-      /** @param {(message: object, observation: unknown) => void | Promise<void>} handler - Notification handler.
-       * @param {(message: object) => unknown} [observe] - Ingress observer.
-       */
-      listenNotifications: (handler, observe) => {
+      listenNotifications: (
+        handler: (
+          message: object,
+          observation: unknown
+        ) => void | Promise<void>,
+        observe?: (message: object) => unknown
+      ) => {
         const removeObserver = subscribeIngress(observe);
         notify = handler;
         return () => {
@@ -279,32 +271,44 @@ export const openClient = async ({
 
 /**
  * Wrap a tool handler so it runs with its own app-server connection and returns MCP text content.
- * @template T
- * @param {(client: Awaited<ReturnType<typeof openClient>>, args: T) => unknown} handler - Native request handler.
- * @returns {(args: T, extra?: {signal?: AbortSignal}) => Promise<{content: {text: string | undefined, type: string}[], isError?: boolean}>} Wrapped MCP handler.
  */
-export const withClient = (handler) => async (args, extra) => {
-  let client;
-  let result;
-  try {
-    client = await openClient({ signal: extra?.signal });
-    const value = await handler(client, args);
-    result = {
-      content: [{ text: JSON.stringify(value ?? null, null, 1), type: "text" }]
-    };
-  } catch (error) {
-    result = {
-      content: [
-        {
-          text:
-            error instanceof Error ? error.message : "Native request failed",
-          type: "text"
-        }
-      ],
-      isError: true
-    };
-  } finally {
-    client?.close();
-  }
-  return result;
-};
+export const withClient =
+  <T>(
+    handler: (
+      client: Awaited<ReturnType<typeof openClient>>,
+      args: T
+    ) => unknown
+  ): ((
+    args: T,
+    extra?: { signal?: AbortSignal }
+  ) => Promise<{
+    content: { text: string | undefined; type: string }[];
+    isError?: boolean;
+  }>) =>
+  async (args, extra) => {
+    let client;
+    let result;
+    try {
+      client = await openClient({ signal: extra?.signal });
+      const value = await handler(client, args);
+      result = {
+        content: [
+          { text: JSON.stringify(value ?? null, null, 1), type: "text" }
+        ]
+      };
+    } catch (error) {
+      result = {
+        content: [
+          {
+            text:
+              error instanceof Error ? error.message : "Native request failed",
+            type: "text"
+          }
+        ],
+        isError: true
+      };
+    } finally {
+      client?.close();
+    }
+    return result;
+  };

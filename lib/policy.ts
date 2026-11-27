@@ -24,9 +24,8 @@ export const USAGE_METHODS = new Set([
 
 /**
  * Return the refusal text for a method this server never sends, or null.
- * @param {string} method - Native method name.
  */
-export const refusal = (method) => {
+export const refusal = (method: string) => {
   let reason = null;
   if (BLOCKED_METHODS.has(method)) {
     reason = `${method} requires a separate direct human instruction`;

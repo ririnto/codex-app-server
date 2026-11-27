@@ -2,13 +2,13 @@ import { once } from "node:events";
 
 import { z } from "zod";
 
-import { openClient } from "./connection.mjs";
+import { openClient } from "#lib/connection";
 import {
   nativeItem,
   nativeNotification,
   nativeTurn,
   threadRead
-} from "./native-schema.mjs";
+} from "#lib/native-schema";
 
 const MAX_PENDING = 128;
 const nativeError = z.looseObject({ message: z.string() });
@@ -23,57 +23,55 @@ const loadedPage = z.looseObject({
   data: z.array(z.string()).nullish(),
   nextCursor: z.string().nullish()
 });
-/**
- * @typedef {Record<string, unknown> & {event: string, threadId: string | null, threadName?: string | null, turnId?: string | null, enrichmentError?: string, error?: unknown}} MonitorEvent
- */
+type MonitorEvent = Record<string, unknown> & {
+  event: string;
+  threadId: string | null;
+  threadName?: string | null;
+  turnId?: string | null;
+  enrichmentError?: string;
+  error?: unknown;
+};
 
-/** @param {unknown} error - Native request failure. */
-const errorMessage = (error) => {
+const errorMessage = (error: unknown) => {
   const result = nativeError.safeParse(error);
   return result.success ? result.data.message : "";
 };
 
 /**
  * Detect a method-not-supported rejection for the requested read.
- * @param {unknown} error - Native request failure.
  */
-const methodNotSupported = (error) =>
+const methodNotSupported = (error: unknown) =>
   /"code":-32601/u.test(errorMessage(error));
 
 /**
  * Detect a transient rejection for a thread whose rollout file has no content yet.
- * @param {unknown} error - Native request failure.
  */
-const emptyRollout = (error) =>
+const emptyRollout = (error: unknown) =>
   /"code":-32603/u.test(errorMessage(error)) &&
   /"message":"[^]*rollout[^]*is empty/iu.test(errorMessage(error));
 
 /**
  * Detect a transient rejection for a thread whose history is not materialized yet.
- * @param {unknown} error - Native request failure.
  */
-const notMaterialized = (error) =>
+const notMaterialized = (error: unknown) =>
   /"code":-32600/u.test(errorMessage(error)) &&
   /"message":"[^]*not materialized/iu.test(errorMessage(error));
 
 /**
  * Detect a transient turn-read rejection that a later inspection may resolve.
- * @param {unknown} error - Native request failure.
  */
-const transientRead = (error) => emptyRollout(error) || notMaterialized(error);
+const transientRead = (error: unknown) =>
+  emptyRollout(error) || notMaterialized(error);
 
 /**
  * Determine whether native completion timing establishes a pre-launch turn.
- * @param {z.infer<typeof nativeTurn>} turn - Native turn.
- * @param {number} startedAt - Monitor start time in seconds.
  */
-const historicalTurn = (turn, startedAt) =>
+const historicalTurn = (turn: z.infer<typeof nativeTurn>, startedAt: number) =>
   typeof turn.completedAt === "number" && turn.completedAt < startedAt;
 
 /**
  * Watch native thread status broadcasts without resuming threads or claiming a writer.
  * Silently baseline existing work and output configured, enriched events one at a time.
- * @param {{emit: (event: Record<string, unknown>, signal: AbortSignal) => Promise<void>, includeInitial?: boolean, includePreviousNotLoaded?: boolean, includeUnnamed?: boolean, signal: AbortSignal, statuses: string[], threadIds: string[]}} options - Monitor configuration.
  */
 export const watchThreads = async ({
   emit,
@@ -83,24 +81,31 @@ export const watchThreads = async ({
   signal,
   statuses,
   threadIds
+}: {
+  emit: (event: Record<string, unknown>, signal: AbortSignal) => Promise<void>;
+  includeInitial?: boolean;
+  includePreviousNotLoaded?: boolean;
+  includeUnnamed?: boolean;
+  signal: AbortSignal;
+  statuses: string[];
+  threadIds: string[];
 }) => {
   const startedAt = Math.floor(Date.now() / 1000);
-  /** @type {Map<string, string | null | undefined>} */
-  const notified = new Map();
+  const notified = new Map<string, string | null | undefined>();
   const startup = { notified, ready: false };
-  /** @type {[z.infer<typeof nativeNotification>, boolean][]} */
-  const pendingNotifications = [];
-  /** @type {PromiseWithResolvers<((note: z.infer<typeof nativeNotification>, initial: boolean) => Promise<void>) | undefined>} */
-  const initialized = Promise.withResolvers();
+  const pendingNotifications: [z.infer<typeof nativeNotification>, boolean][] =
+    [];
+  const initialized: PromiseWithResolvers<
+    | ((
+        note: z.infer<typeof nativeNotification>,
+        initial: boolean
+      ) => Promise<void>)
+    | undefined
+  > = Promise.withResolvers();
   let clientReady = false;
-  /**
-   * @param {object} message - Native notification candidate.
-   * @returns {boolean | undefined} Startup status for selected notifications.
-   */
-  const observeNotification = (message) => {
+  const observeNotification = (message: object): boolean | undefined => {
     const parsed = nativeNotification.safeParse(message);
-    /** @type {boolean | undefined} */
-    let initial;
+    let initial: boolean | undefined;
     if (parsed.success) {
       const { data: note } = parsed;
       const { params } = note;
@@ -130,11 +135,10 @@ export const watchThreads = async ({
     }
     return initial;
   };
-  /**
-   * @param {object} message - Native notification candidate.
-   * @param {unknown} notificationInitial - Startup observation.
-   */
-  const notification = async (message, notificationInitial) => {
+  const notification = async (
+    message: object,
+    notificationInitial: unknown
+  ) => {
     const parsed = nativeNotification.safeParse(message);
     if (parsed.success && typeof notificationInitial === "boolean") {
       const note = parsed.data;
@@ -164,36 +168,38 @@ export const watchThreads = async ({
   }
   const waiting = AbortSignal.any([signal, client.signal, inspector.signal]);
   const ended = once(waiting, "abort");
-  /** @param {{previous: string | null, status: string | undefined}} state - Thread status transition. */
-  const observable = ({ previous, status }) =>
+  const observable = ({
+    previous,
+    status
+  }: {
+    previous: string | null;
+    status: string | undefined;
+  }) =>
     (previous !== null || includeInitial) &&
     (previous !== "notLoaded" ||
       includePreviousNotLoaded ||
       status === "failed" ||
       status === "systemError");
-  /** @type {Map<string, string | undefined>} */
-  const current = new Map();
-  /** @type {Map<string, {initial?: string, latest?: string, inspection?: string, initialObserved?: boolean, initialHistorical?: boolean}>} */
-  const failures = new Map();
-  /** @type {Set<string>} */
-  const pending = new Set();
-  /** @type {Set<string>} */
-  const turnReadRefused = new Set();
+  const current = new Map<string, string | undefined>();
+  const failures = new Map<
+    string,
+    {
+      initial?: string;
+      latest?: string;
+      inspection?: string;
+      initialObserved?: boolean;
+      initialHistorical?: boolean;
+    }
+  >();
+  const pending = new Set<string>();
+  const turnReadRefused = new Set<string>();
   const capability = { noticed: false };
-  /** @param {string} threadId - Thread identifier. */
-  const selected = (threadId) =>
+  const selected = (threadId: string) =>
     threadIds.includes("*") || threadIds.includes(threadId);
-  /**
-   * @param {string} threadId - Thread identifier.
-   * @param {string} turnId - Turn identifier.
-   */
-  const turnItems = async (threadId, turnId) => {
-    /** @type {z.infer<typeof nativeItem>[]} */
-    let items = [];
-    /** @type {Set<string>} */
-    const cursors = new Set();
-    /** @param {string} [cursor] - Page cursor. */
-    const page = async (cursor) => {
+  const turnItems = async (threadId: string, turnId: string) => {
+    let items: z.infer<typeof nativeItem>[] = [];
+    const cursors = new Set<string>();
+    const page = async (cursor?: string) => {
       const result = itemPage.parse(
         await inspector.request("thread/items/list", {
           ...(cursor !== undefined && cursor !== "" ? { cursor } : {}),
@@ -244,11 +250,10 @@ export const watchThreads = async ({
     }
     return items;
   };
-  /**
-   * @param {string} threadId - Thread identifier.
-   * @param {z.infer<typeof nativeTurn>} turn - Native turn.
-   */
-  const finalMessage = async (threadId, turn) => {
+  const finalMessage = async (
+    threadId: string,
+    turn: z.infer<typeof nativeTurn>
+  ) => {
     let result;
     try {
       if (typeof turn.id !== "string") {
@@ -274,11 +279,10 @@ export const watchThreads = async ({
     }
     return result;
   };
-  /**
-   * @param {MonitorEvent} event - Monitor event.
-   * @param {z.infer<typeof nativeTurn>} [turn] - Terminal turn.
-   */
-  const output = async (event, turn) => {
+  const output = async (
+    event: MonitorEvent,
+    turn?: z.infer<typeof nativeTurn>
+  ) => {
     let threadName = event.threadName ?? null;
     let enrichmentError;
     if (
@@ -306,8 +310,10 @@ export const watchThreads = async ({
       (typeof threadName === "string" && threadName.trim().length > 0) ||
       ["inspection", "capability"].includes(event.event)
     ) {
-      /** @type {{enrichmentError?: string, finalMessage?: string | null}} */
-      const details =
+      const details: {
+        enrichmentError?: string;
+        finalMessage?: string | null;
+      } =
         turn && event.threadId !== null
           ? await finalMessage(event.threadId, turn)
           : {};
@@ -346,12 +352,11 @@ export const watchThreads = async ({
       );
     }
   };
-  /**
-   * @param {string} threadId - Thread identifier.
-   * @param {string | undefined} status - Native status.
-   * @param {{threadName?: string | null}} [extra] - Optional thread name.
-   */
-  const transition = async (threadId, status, extra = {}) => {
+  const transition = async (
+    threadId: string,
+    status: string | undefined,
+    extra: { threadName?: string | null } = {}
+  ) => {
     const previous = current.get(threadId) ?? null;
     if (previous !== status) {
       current.set(threadId, status);
@@ -370,19 +375,12 @@ export const watchThreads = async ({
       }
     }
   };
-  /**
-   * @param {string} threadId - Thread identifier.
-   * @param {z.infer<typeof nativeTurn>} turn - Native turn.
-   * @param {boolean} initial - Initial observation.
-   * @param {boolean} inspection - Whether inspection supplied the turn.
-   * @param {boolean} notificationInitial - Whether notification arrived at startup.
-   */
   const rememberTerminal = (
-    threadId,
-    turn,
-    initial,
-    inspection,
-    notificationInitial
+    threadId: string,
+    turn: z.infer<typeof nativeTurn>,
+    initial: boolean,
+    inspection: boolean,
+    notificationInitial: boolean
   ) => {
     const seen = failures.get(threadId) ?? {};
     const identifiers = [seen.inspection, seen.latest];
@@ -419,15 +417,18 @@ export const watchThreads = async ({
     }
     return repeated;
   };
-  /**
-   * @param {string} threadId - Thread identifier.
-   * @param {z.infer<typeof nativeTurn> | undefined} turn - Native turn.
-   * @param {{initial?: boolean, inspection?: boolean, notificationInitial?: boolean}} [options] - Observation context.
-   */
   const terminal = async (
-    threadId,
-    turn,
-    { initial = false, inspection = false, notificationInitial = false } = {}
+    threadId: string,
+    turn: z.infer<typeof nativeTurn> | undefined,
+    {
+      initial = false,
+      inspection = false,
+      notificationInitial = false
+    }: {
+      initial?: boolean;
+      inspection?: boolean;
+      notificationInitial?: boolean;
+    } = {}
   ) => {
     if (
       turn !== undefined &&
@@ -464,11 +465,7 @@ export const watchThreads = async ({
       }
     }
   };
-  /**
-   * @param {string | null} threadId - Thread identifier, when known.
-   * @param {unknown} error - Inspection failure.
-   */
-  const inspectionError = async (threadId, error) => {
+  const inspectionError = async (threadId: string | null, error: unknown) => {
     if (waiting.aborted) {
       throw error;
     }
@@ -493,8 +490,7 @@ export const watchThreads = async ({
       });
     }
   };
-  /** @param {string} threadId - Thread identifier. */
-  const latestTurn = async (threadId) => {
+  const latestTurn = async (threadId: string) => {
     if (!turnReadRefused.has(threadId)) {
       try {
         const page = turnPage.parse(
@@ -518,8 +514,7 @@ export const watchThreads = async ({
     );
     return (thread.turns ?? []).at(-1);
   };
-  /** @param {string} threadId - Thread identifier. */
-  const snapshotStatus = async (threadId) => {
+  const snapshotStatus = async (threadId: string) => {
     const { thread } = threadRead.parse(
       await inspector.request("thread/read", { includeTurns: false, threadId })
     );
@@ -535,19 +530,13 @@ export const watchThreads = async ({
       }
     }
   };
-  /**
-   * @param {string} threadId - Thread identifier.
-   * @param {boolean} [initial] - Initial inspection.
-   * @param {boolean} [notificationInitial] - Startup notification.
-   */
   const inspect = async (
-    threadId,
+    threadId: string,
     initial = false,
     notificationInitial = false
   ) => {
     pending.delete(threadId);
-    /** @type {unknown} */
-    let turnRejected = null;
+    let turnRejected: unknown = null;
     try {
       const latest = await latestTurn(threadId);
       await terminal(threadId, latest, {
@@ -558,8 +547,7 @@ export const watchThreads = async ({
     } catch (error) {
       turnRejected = error;
     }
-    /** @type {unknown} */
-    let statusRejected = null;
+    let statusRejected: unknown = null;
     if (initial) {
       try {
         await snapshotStatus(threadId);
@@ -593,11 +581,10 @@ export const watchThreads = async ({
       }
     }
   };
-  /**
-   * @param {z.infer<typeof nativeNotification>} note - Native notification.
-   * @param {boolean} notificationInitial - Whether the notification was buffered during startup.
-   */
-  const handle = async (note, notificationInitial) => {
+  const handle = async (
+    note: z.infer<typeof nativeNotification>,
+    notificationInitial: boolean
+  ) => {
     const { params } = note;
     const threadId = params?.threadId;
     if (
@@ -646,10 +633,8 @@ export const watchThreads = async ({
       if (threadIds.includes("*")) {
         ids = [];
         try {
-          /** @type {Set<string>} */
-          const cursors = new Set();
-          /** @param {string} [cursor] - Page cursor. */
-          const page = async (cursor) => {
+          const cursors = new Set<string>();
+          const page = async (cursor?: string) => {
             const loaded = loadedPage.parse(
               await inspector.request(
                 "thread/loaded/list",

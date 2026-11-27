@@ -11,8 +11,7 @@ import { lint } from "markdownlint/sync";
 import boxDrawing from "../rules/no-box-drawing.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-/** @param {string} input - Markdown source. */
-const violations = (input) =>
+const violations = (input: string) =>
   lint({
     config: { default: false, "docs/no-box-drawing": true },
     customRules: [boxDrawing],

@@ -103,8 +103,13 @@ Codex's native manifest loader does not expand Claude path placeholders in MCP a
 Claude Code uses the working directory supplied by its host.
 
 The outer npm command supplies Husky while the inner npm command packs the local package.
-The local package's `prepare` lifecycle runs before the inner command installs its execution-cache packages.
-The outer package path keeps that lifecycle working without contributor dependencies.
+The local package's `prepare` lifecycle builds the JavaScript runtime in `dist/` before the inner command installs its execution-cache packages.
+The generated `dist/package.json` resolves the same internal imports to JavaScript that the source package resolves to TypeScript.
+The npm executable names and host launch commands stay the same.
+Change direct checkout launchers from `node server.mjs` or `node monitor.mjs` to `node server.ts` or `node monitor.ts`.
+Change direct installed-file launchers to `dist/server.js` or `dist/monitor.js`, or use the matching npm executable.
+The outer package provides Husky without a contributor install.
+The build uses Node.js 24 type stripping and needs no compiler or runtime dependencies.
 The inner npm command installs a copy of the local package and its declared dependencies into its execution cache.
 The `--install-links` option installs file dependencies as packages instead of symlinking them.
 Husky only configures repository hooks during preparation and is not a plugin runtime dependency.
@@ -423,28 +428,28 @@ The plugin adds no dedicated cleanup tools.
 - `.agents/plugins/marketplace.json` declares the Codex catalog for installing this repository as its own marketplace.
 - `mcp.json` and `.mcp.json` register the Codex and Claude Code stdio server.
 - `package.json` declares the executable and its MCP SDK, WebSocket, and schema dependencies.
-- `server.mjs` creates the MCP server, retains shared instructions, registers the feature modules, and starts stdio transport.
-- `lib/connection.mjs` owns control-socket transport, JSON-RPC requests, and connection cleanup.
-- `monitor.mjs` parses monitor configuration and emits JSON lines.
-- `lib/monitor.mjs` watches native status broadcasts and terminal failures.
-- `lib/thread-tools.mjs` registers thread inspection and steering tools, including turn completion handling.
-- `lib/mcp-tool.mjs` registers the configured MCP tool proxy.
-- `lib/native-session.mjs` owns command and watch connection lifetimes, streaming output, and MCP shutdown cleanup.
-- `lib/session-transport.mjs` extends SDK stdio lifecycle handling to retire native resources and cancel pending stdout drains.
+- `server.ts` creates the MCP server, retains shared instructions, registers the feature modules, and starts stdio transport.
+- `lib/connection.ts` owns control-socket transport, JSON-RPC requests, and connection cleanup.
+- `monitor.ts` parses monitor configuration and emits JSON lines.
+- `lib/monitor.ts` watches native status broadcasts and terminal failures.
+- `lib/thread-tools.ts` registers thread inspection and steering tools, including turn completion handling.
+- `lib/mcp-tool.ts` registers the configured MCP tool proxy.
+- `lib/native-session.ts` owns command and watch connection lifetimes, streaming output, and MCP shutdown cleanup.
+- `lib/session-transport.ts` extends SDK stdio lifecycle handling to retire native resources and cancel pending stdout drains.
 - `skills/thread-control/` contains the activated workflow, conditional monitor reference, and ready-to-use Monitor input asset.
-- `lib/turn-tools.mjs` owns active-turn guards for steering and interruption.
-- `lib/turn.mjs` shares turn-start and buffered completion handling.
-- `lib/queue.mjs` owns message delivery, receipts, deadlines, and process-local writer serialization.
-- `lib/thread-admin.mjs` registers small thread administration tools.
-- `lib/catalog.mjs` converts, filters, and exposes installed-version method schemas.
-- `lib/schema.mjs` owns schema generation, version and hash caching, parameter schemas, and native ClientRequest validation.
-- `lib/policy.mjs` owns refusal, native CLI, and usage policies.
+- `lib/turn-tools.ts` owns active-turn guards for steering and interruption.
+- `lib/turn.ts` shares turn-start and buffered completion handling.
+- `lib/queue.ts` owns message delivery, receipts, deadlines, and process-local writer serialization.
+- `lib/thread-admin.ts` registers small thread administration tools.
+- `lib/catalog.ts` converts, filters, and exposes installed-version method schemas.
+- `lib/schema.ts` owns schema generation, version and hash caching, parameter schemas, and native ClientRequest validation.
+- `lib/policy.ts` owns refusal, native CLI, and usage policies.
 - `AGENTS.md` records catalog and policy maintenance requirements.
 - `tests/` verifies the stdio server against a disposable Unix-socket fixture.
 - `.claude-plugin/plugin.json` declares Claude Code identity, MCP configuration, and skills.
 - `.claude-plugin/marketplace.json` declares the Claude Code catalog for installing this repository as its own marketplace.
-- `release/` contains repository release-version and issue-form validation.
-- `rules/` contains the Markdown custom lint rule.
+- `release/` contains the npm runtime build and repository release-version and issue-form validation.
+- `rules/` contains custom Markdown and workflow validation rules.
 
 ## Development
 
@@ -453,6 +458,7 @@ Install locked dependencies and run the aggregate gate.
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm run build
 pnpm run check
 claude plugin validate .
 claude plugin validate .claude-plugin/plugin.json
@@ -460,7 +466,7 @@ claude plugin validate .claude-plugin/plugin.json
 
 The aggregate gate runs the disposable-socket runtime suite, release-version checks, issue-form validation, validation fixtures, Markdown links, and Ultracite.
 The Git hooks run `pnpm run pre-commit` and `pnpm run pre-push` directly.
-Use `node --test tests/server.test.mjs` for runtime changes and named `check:*` commands for bounded changes.
+Use `node --test tests/server.test.ts` for runtime changes and named `check:*` commands for bounded changes.
 Runtime tests pack the real npm executable and launch it from a disposable directory with an isolated npm cache.
 The fixtures exercise transport, catalogs, queues, monitors, cancellation, and shutdown without mutating a live daemon.
 Public CI runs the aggregate gate on Linux and the runtime suite on macOS.
