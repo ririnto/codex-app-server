@@ -41,6 +41,9 @@ for (const file of files) {
   if (file.startsWith(".husky/") && /\.(?:[cm]?[jt]sx?)$/u.test(file)) {
     checks.add("check:types");
     checks.add("check:ultracite");
+    if (file === ".husky/check-staged.ts") {
+      testFiles.add("tests/plugin.test.ts");
+    }
   } else if (/\.(?:[cm]?[jt]sx?)$/u.test(file)) {
     if (file.endsWith(".test.ts")) {
       testFiles.add(file);
@@ -74,9 +77,16 @@ for (const file of files) {
   ) {
     checks.add("check:workflow-action-defaults");
     checks.add("check:ultracite");
-  } else if (file === ".claude-plugin/plugin.json") {
+  } else if (
+    file === ".claude-plugin/plugin.json" ||
+    file === ".codex-plugin/plugin.json"
+  ) {
     checks.add("check:plugin-version");
     checks.add("check:ultracite");
+    testFiles.add("tests/plugin.test.ts");
+  } else if (file === ".mcp.json" || file === "mcp.json") {
+    checks.add("check:ultracite");
+    testFiles.add("tests/plugin.test.ts");
   } else if (file === "package.json") {
     if (packageHookScriptsOnly) {
       checks.add("check:ultracite");
@@ -88,6 +98,8 @@ for (const file of files) {
     checks.add("check:ultracite");
     if (file.startsWith("skills/")) {
       checks.add("check:test");
+    } else if (file === "README.md") {
+      testFiles.add("tests/plugin.test.ts");
     }
   } else {
     runAll = true;
