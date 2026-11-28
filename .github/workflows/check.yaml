@@ -22,7 +22,7 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run check
+      - run: pnpm check
   macos:
     name: macOS runtime
     runs-on: macos-latest
