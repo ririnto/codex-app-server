@@ -751,22 +751,37 @@ await test("issue forms keep five required textarea sections and validate cleanl
 });
 
 await test("plugin version validation accepts matching calendar date releases", () => {
-  assert.doesNotThrow(() => {
-    validatePluginVersions("2026.10.10.07", "2026.10.10.07");
-  });
+  for (const version of ["2026.11.27-1", "2026.11.27-12"]) {
+    assert.doesNotThrow(() => {
+      validatePluginVersions({ Claude: version, Codex: version });
+    }, version);
+  }
 });
 
 await test("plugin version validation rejects invalid format, date, sequence, and parity", () => {
+  for (const version of [
+    "2026.11.27.01",
+    "2026.11.27",
+    "2026.11.27-01",
+    "2026.11.27-1.2",
+    "2026.11.27-0"
+  ]) {
+    assert.throws(
+      () => {
+        validatePluginVersions({ Claude: version, Codex: version });
+      },
+      /format/u,
+      version
+    );
+  }
   assert.throws(() => {
-    validatePluginVersions("2026.10.10", "2026.10.10.01");
-  }, /format/u);
-  assert.throws(() => {
-    validatePluginVersions("2026.02.30.01", "2026.02.30.01");
+    validatePluginVersions({ Claude: "2026.02.30-1", Codex: "2026.02.30-1" });
   }, /valid date/u);
   assert.throws(() => {
-    validatePluginVersions("2026.10.10.00", "2026.10.10.00");
-  }, /non-zero/u);
-  assert.throws(() => {
-    validatePluginVersions("2026.10.10.01", "2026.10.10.02");
+    validatePluginVersions({
+      Claude: "2026.11.27-1",
+      Codex: "2026.11.27-1",
+      marketplace: "2026.11.27-2"
+    });
   }, /must match/u);
 });

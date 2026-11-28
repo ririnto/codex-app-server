@@ -478,18 +478,19 @@ The `npm-run-all2` package provides the existing `run-p` and `run-s` script comm
 
 Keep runtime dependencies npm-compatible and development dependencies in the pnpm catalog.
 The npm package retains its compatible package version because `npm pack` requires a name and version.
-Both host manifests own the plugin's calendar release version.
+Both host manifests and both marketplace catalogs declare the plugin's calendar release version.
 The Markdown gate checks local links, and its TOML parser override selects a patched release.
 See [AGENTS.md](AGENTS.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for repository contracts.
 
 ## Version Updates
 
-Keep the same `yyyy.mm.dd.seq` release version in `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`.
-Use `01` for the first release of a day and increment the sequence for another release that day.
-The standalone marketplace omits a plugin version so the host manifest owns it.
+Use `yyyy.MM.dd-seq` for the plugin release version, for example `2026.11.27-1`.
+Pad the year, month, and day to four, two, and two digits, respectively.
+Use `1` for the first release of a day and increment the unpadded sequence for each subsequent release that day.
+Keep the same version in `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, `.claude-plugin/marketplace.json`, and `.agents/plugins/marketplace.json`.
 The npm package version serves executable packaging rather than the host release identifier.
 
-1. Update both host manifest versions with the changed plugin content.
+1. Update both host manifests and both marketplace catalogs with the same release version.
 2. Run the relevant checks and both native plugin validators.
 3. Inspect the complete diff, confirm version parity, and publish the authorized working branch.
 4. Obtain independent review and merge the ordinary pull request into `main`.

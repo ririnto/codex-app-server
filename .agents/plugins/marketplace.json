@@ -14,7 +14,8 @@
       "source": {
         "path": "./",
         "source": "local"
-      }
+      },
+      "version": "2026.11.27-1"
     }
   ]
 }

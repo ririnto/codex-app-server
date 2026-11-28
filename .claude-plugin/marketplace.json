@@ -17,7 +17,8 @@
       "license": "MIT",
       "name": "codex-app-server",
       "repository": "https://github.com/ririnto/codex-app-server",
-      "source": "./"
+      "source": "./",
+      "version": "2026.11.27-1"
     }
   ]
 }
