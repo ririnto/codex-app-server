@@ -28,31 +28,29 @@ const awaitTurn = async (
   }, waitSeconds * 1000);
   try {
     for await (const [event] of notifications) {
-      if (!(event instanceof CustomEvent)) {
-        continue;
-      }
-      const parsed = nativeNotification.safeParse(event.detail);
-      if (!parsed.success) {
-        continue;
-      }
-      const note = parsed.data;
-      const params = note.params ?? {};
-      if (
-        note.method === "item/completed" &&
-        params.turnId === turnId &&
-        params.item?.type === "agentMessage" &&
-        params.item.phase === "final_answer"
-      ) {
-        result.finalMessage = params.item.text ?? null;
-      }
-      if (note.method === "turn/completed" && params.turn?.id === turnId) {
-        return {
-          ...result,
-          ...(params.turn.error ? { error: params.turn.error } : {}),
-          finalMessage:
-            params.turn.status === "completed" ? result.finalMessage : null,
-          status: params.turn.status
-        };
+      if (event instanceof CustomEvent) {
+        const parsed = nativeNotification.safeParse(event.detail);
+        if (parsed.success) {
+          const note = parsed.data;
+          const params = note.params ?? {};
+          if (
+            note.method === "item/completed" &&
+            params.turnId === turnId &&
+            params.item?.type === "agentMessage" &&
+            params.item.phase === "final_answer"
+          ) {
+            result.finalMessage = params.item.text ?? null;
+          }
+          if (note.method === "turn/completed" && params.turn?.id === turnId) {
+            return {
+              ...result,
+              ...(params.turn.error ? { error: params.turn.error } : {}),
+              finalMessage:
+                params.turn.status === "completed" ? result.finalMessage : null,
+              status: params.turn.status
+            };
+          }
+        }
       }
     }
   } catch (error) {

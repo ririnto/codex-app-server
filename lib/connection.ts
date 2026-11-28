@@ -141,28 +141,30 @@ export const openClient = async ({
           typeof original === "object"
         ) {
           const message = parseMessage(frame.data);
-          if (message === null || typeof message !== "object") {
-            continue;
-          }
-          if (
-            "id" in message &&
-            (typeof message.id === "string" ||
-              typeof message.id === "number") &&
-            ("result" in message || "error" in message)
-          ) {
-            emit(`response:${message.id}`, message);
-          } else if ("id" in message && "method" in message) {
-            try {
-              await send({
-                error: { code: -32_601, message: "not handled by this client" },
-                id: message.id
-              });
-            } catch (error) {
-              fail(error);
+          if (message !== null && typeof message === "object") {
+            if (
+              "id" in message &&
+              (typeof message.id === "string" ||
+                typeof message.id === "number") &&
+              ("result" in message || "error" in message)
+            ) {
+              emit(`response:${message.id}`, message);
+            } else if ("id" in message && "method" in message) {
+              try {
+                await send({
+                  error: {
+                    code: -32_601,
+                    message: "not handled by this client"
+                  },
+                  id: message.id
+                });
+              } catch (error) {
+                fail(error);
+              }
+            } else {
+              emit("notification", message);
+              await notify?.(message, ingress.get(original));
             }
-          } else {
-            emit("notification", message);
-            await notify?.(message, ingress.get(original));
           }
         }
       }
