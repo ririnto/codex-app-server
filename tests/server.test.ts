@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { Socket } from "node:net";
@@ -573,9 +574,12 @@ const mcpTests = () => {
     t.after(async () => {
       await rm(directory, { force: true, recursive: true });
     });
+    const packArgs = ["pack", "--json", "--pack-destination", directory];
     const { stdout } = await execa(
       "npm",
-      ["pack", "--json", "--pack-destination", directory],
+      existsSync(new URL("../node_modules/.bin/husky", import.meta.url))
+        ? packArgs
+        : ["exec", "--yes", "--package=husky@^9.1.7", "--", "npm", ...packArgs],
       { cwd: path.dirname(serverPath) }
     );
     const [packed] = z
