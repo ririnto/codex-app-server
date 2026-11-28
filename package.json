@@ -31,8 +31,8 @@
     "fix": "run-p fix:*",
     "fix:markdownlint-cli2": "markdownlint-cli2 --fix",
     "fix:ultracite": "ultracite fix",
-    "pre-commit": "run-s check",
-    "pre-push": "run-s check",
+    "pre-commit": "node .husky/check-staged.ts",
+    "pre-push": "run-p check:*",
     "prepare": "husky >&2 && npm run build >&2"
   },
   "dependencies": {
