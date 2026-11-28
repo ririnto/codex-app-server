@@ -14,7 +14,7 @@ import { validateIssueForms } from "../release/check-issue-forms.ts";
 import { validatePluginVersions } from "../release/check-plugin-version.ts";
 
 const repositoryRoot = new URL("../", import.meta.url);
-const workflowCheck = ["--silent", "run", "check:workflow-action-defaults"];
+const workflowCheck = ["--silent", "check:workflow-action-defaults"];
 
 await test("the workflow package check distinguishes literals, anchors, and aliases", async (t) => {
   const directory = await mkdtemp(

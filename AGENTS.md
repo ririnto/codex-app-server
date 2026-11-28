@@ -95,7 +95,7 @@ Separate instructions, supplied evidence, and examples while preserving constrai
 
 ### Validate changes
 
-Run `pnpm run check` for mixed changes and repository-wide validation.
+Run `pnpm check` for mixed changes and repository-wide validation.
 Use named `check:*` commands for bounded changes whose unaffected proof remains valid.
 Run `claude plugin validate .` and `claude plugin validate .claude-plugin/plugin.json` after packaged-content changes.
 Keep live-daemon mutations out of tests and use the existing disposable Unix-socket fixtures.

@@ -128,7 +128,7 @@ if (files.length > 0 && !runAll) {
   }
 }
 if (runAll) {
-  const result = await execa("pnpm", ["run", "check"], {
+  const result = await execa("pnpm", ["check"], {
     reject: false,
     stdio: "inherit"
   });
