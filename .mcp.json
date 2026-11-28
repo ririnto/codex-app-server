@@ -3,18 +3,10 @@
   "mcpServers": {
     "codex-app-server": {
       "type": "stdio",
-      "command": "npm",
+      "command": "/bin/sh",
       "args": [
-        "exec",
-        "--yes",
-        "--package=husky@^9.1.7",
-        "--",
-        "npm",
-        "exec",
-        "--yes",
-        "--install-links",
-        "--package=${CLAUDE_PLUGIN_ROOT}",
-        "--",
+        "${CLAUDE_PLUGIN_ROOT}/skills/thread-control/scripts/run-installed.sh",
+        "${CLAUDE_PLUGIN_ROOT}",
         "codex-app-server"
       ],
       "env": { "NODE_USE_SYSTEM_CA": "1" }

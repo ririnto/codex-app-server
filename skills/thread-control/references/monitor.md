@@ -1,6 +1,7 @@
 # Monitor setup
 
-Use the installed plugin executable as the watch command.
+Use the plugin's launcher as the watch command.
+The launcher runs `codex-thread-monitor` from `PATH` when available and uses local npm packaging otherwise.
 In Claude Code, load [the input asset](../assets/monitor.json) and supply it to the native Monitor tool.
 In Codex or another host without that tool, run the same executable through the host's managed background-command facility with its 1800-second deadline and retain its owned process handle for cancellation.
 Do not assume a host has Claude Code's Monitor API.
@@ -11,7 +12,7 @@ An arbitrary skill asset is not automatically expanded by the host.
 Do not replace the executable with a custom watcher.
 
 ```sh
-NODE_USE_SYSTEM_CA=1 npm exec --yes --package=husky@^9.1.7 -- npm exec --yes --install-links --package="${CLAUDE_PLUGIN_ROOT}" -- codex-thread-monitor --thread '*' --status idle --status failed --status systemError --timeout-seconds 1800
+NODE_USE_SYSTEM_CA=1 /bin/sh "${CLAUDE_PLUGIN_ROOT}/skills/thread-control/scripts/run-installed.sh" "${CLAUDE_PLUGIN_ROOT}" codex-thread-monitor --thread '*' --status idle --status failed --status systemError --timeout-seconds 1800
 ```
 
 ## Select watched threads

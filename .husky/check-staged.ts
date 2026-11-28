@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { execa } from "execa";
 import { z } from "zod";
 
@@ -122,7 +124,18 @@ if (runAll) {
 } else if (files.length > 0) {
   const commands: [string, ...string[]][] = [];
   if (selectedChecks.length > 0) {
-    commands.push(["pnpm", "exec", "run-p", ...selectedChecks]);
+    commands.push([
+      "/bin/sh",
+      fileURLToPath(
+        new URL(
+          "../skills/thread-control/scripts/run-installed.sh",
+          import.meta.url
+        )
+      ),
+      "--pnpm",
+      "run-p",
+      ...selectedChecks
+    ]);
   }
   if (selectedTestFiles.length > 0) {
     commands.push([process.execPath, "--test", ...selectedTestFiles]);

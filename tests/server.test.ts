@@ -605,6 +605,7 @@ const mcpTests = () => {
       "skills/thread-control/SKILL.md",
       "skills/thread-control/assets/monitor.json",
       "skills/thread-control/references/monitor.md",
+      "skills/thread-control/scripts/run-installed.sh",
       "dist/lib/turn-tools.js",
       "dist/lib/thread-admin.js",
       "dist/lib/catalog.js",
