@@ -75,7 +75,7 @@ const launchPaths = async (t: TestContext) => {
     ...["npm", "pnpm"].map(async (name) => {
       await writeFile(path.join(runners, name), probeScript, { mode: 0o755 });
     }),
-    writeFile(path.join(runners, "git"), "#!/bin/sh\nprintf 'README.md\\0'\n", {
+    writeFile(path.join(runners, "git"), "#!/bin/sh\nprintf 'AGENTS.md\\0'\n", {
       mode: 0o755
     })
   ]);
