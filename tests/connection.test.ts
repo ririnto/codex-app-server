@@ -25,6 +25,9 @@ const verifyStalledUpgrade: (
   });
   t.after(async () => {
     controller.abort();
+    if (!cancel) {
+      t.mock.timers.reset();
+    }
     for (const socket of sockets) {
       socket.destroy();
     }
@@ -41,23 +44,27 @@ const verifyStalledUpgrade: (
   await once(server, "listening", { signal: t.signal });
   process.env.CODEX_APP_SERVER_SOCKET = socketPath;
   const reason = new Error("Caller cancelled the connection");
+  if (!cancel) {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+  }
+  const connection = openClient({ signal: controller.signal });
+  const [, socket] = (await once(server, "upgrade", {
+    signal: t.signal
+  })) as unknown[];
+  assert.ok(socket instanceof Socket);
+  const closed = once(socket, "close", { signal: t.signal });
+  socket.once("end", () => {
+    socket.end();
+  });
+  socket.resume();
+  if (cancel) {
+    controller.abort(reason);
+  } else {
+    t.mock.timers.tick(5000);
+  }
   await Promise.all([
-    (async () => {
-      const [, socket] = (await once(server, "upgrade", {
-        signal: t.signal
-      })) as unknown[];
-      assert.ok(socket instanceof Socket);
-      const closed = once(socket, "close", { signal: t.signal });
-      socket.once("end", () => {
-        socket.end();
-      });
-      socket.resume();
-      if (cancel) {
-        controller.abort(reason);
-      }
-      await closed;
-    })(),
-    assert.rejects(openClient({ signal: controller.signal }), (error) =>
+    closed,
+    assert.rejects(connection, (error) =>
       cancel ? error === reason : error instanceof Error
     )
   ]);

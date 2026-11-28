@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { Socket } from "node:net";
@@ -209,7 +210,7 @@ const fixture = async (
     catalog?: Record<string, unknown>;
     clientNotifications?: unknown;
     failInitialize?: boolean;
-    package?: string;
+    executable?: string;
     serverNotifications?: unknown;
     serverRequests?: unknown;
   } = {}
@@ -226,19 +227,12 @@ const fixture = async (
   const codexBin = path.join(directory, "fake-codex.mjs");
   const transport = new StdioClientTransport({
     args:
-      options.package !== undefined && options.package !== ""
-        ? [
-            "exec",
-            "--yes",
-            "--install-links",
-            `--package=${options.package}`,
-            "--",
-            "codex-app-server"
-          ]
+      options.executable !== undefined && options.executable !== ""
+        ? []
         : [serverPath],
     command:
-      options.package !== undefined && options.package !== ""
-        ? "npm"
+      options.executable !== undefined && options.executable !== ""
+        ? options.executable
         : process.execPath,
     cwd: directory,
     env: {
@@ -533,9 +527,9 @@ await test("monitor backpressure stops notification work and cancellation releas
   assert.equal(events.length, 1);
 });
 
-const concurrency = availableParallelism();
+const concurrency = Math.max(1, Math.floor(availableParallelism() / 2));
 
-await suite("MCP tools and native sessions", { concurrency }, () => {
+const mcpTests = () => {
   void test("lists self-describing curated tools and all sources without repairing metadata", async (t) => {
     const { client, requests } = await fixture(t, ({ reply }) => {
       reply({
@@ -580,26 +574,13 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
     t.after(async () => {
       await rm(directory, { force: true, recursive: true });
     });
+    const packArgs = ["pack", "--json", "--pack-destination", directory];
     const { stdout } = await execa(
       "npm",
-      [
-        "exec",
-        "--yes",
-        "--package=husky@^9.1.7",
-        "--",
-        "npm",
-        "pack",
-        "--json",
-        "--pack-destination",
-        directory
-      ],
-      {
-        cwd: path.dirname(serverPath),
-        env: {
-          ...process.env,
-          npm_config_cache: path.join(directory, "npm-cache")
-        }
-      }
+      existsSync(new URL("../node_modules/.bin/husky", import.meta.url))
+        ? packArgs
+        : ["exec", "--yes", "--package=husky@^9.1.7", "--", "npm", ...packArgs],
+      { cwd: path.dirname(serverPath) }
     );
     const [packed] = z
       .tuple([
@@ -640,6 +621,22 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
     assert.ok(
       packed.files.every(({ path: filename }) => !filename.endsWith(".ts"))
     );
+    const installDirectory = path.join(directory, "installed");
+    await execa(
+      "npm",
+      [
+        "install",
+        "--prefix",
+        installDirectory,
+        path.join(directory, packed.filename)
+      ],
+      { cwd: directory }
+    );
+    const executableDirectory = path.join(
+      installDirectory,
+      "node_modules",
+      ".bin"
+    );
     const { client, requests } = await fixture(
       t,
       ({ message, reply }) => {
@@ -651,7 +648,10 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
           reply({ fixture: "raw" });
         }
       },
-      { catalog: CATALOG, package: path.join(directory, packed.filename) }
+      {
+        catalog: CATALOG,
+        executable: path.join(executableDirectory, "codex-app-server")
+      }
     );
     const { tools } = await client.listTools();
     assert.deepEqual(
@@ -713,14 +713,8 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
       );
     });
     const installedMonitor = await execa(
-      "npm",
+      path.join(executableDirectory, "codex-thread-monitor"),
       [
-        "exec",
-        "--yes",
-        "--install-links",
-        `--package=${path.join(directory, packed.filename)}`,
-        "--",
-        "codex-thread-monitor",
         "--include-initial",
         "--status",
         "idle",
@@ -734,8 +728,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
         env: {
           ...process.env,
           CODEX_APP_SERVER_SOCKET: monitorFixture.socket,
-          NODE_USE_SYSTEM_CA: "1",
-          npm_config_cache: path.join(directory, "npm-cache")
+          NODE_USE_SYSTEM_CA: "1"
         }
       }
     );
@@ -2907,7 +2900,7 @@ await suite("MCP tools and native sessions", { concurrency }, () => {
     assert.equal(result.error, true);
     assert.equal(requests.length, 0);
   });
-});
+};
 
 /**
  * Run the source monitor against the same fixture socket and decode line events.
@@ -2955,7 +2948,7 @@ const monitor = (
   return { child, events, exited };
 };
 
-await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
+const monitorTests = () => {
   void test("source monitor watches configured native transitions and classifies terminal failures", async (t) => {
     let status = "active";
     let turn: FixtureTurn = { id: "initial", status: "inProgress" };
@@ -7179,4 +7172,13 @@ await suite("Monitor and active-turn lifecycle", { concurrency }, () => {
       });
     });
   }
+};
+
+await suite("Server suites", { concurrency: 2 }, () => {
+  void suite("MCP tools and native sessions", { concurrency }, mcpTests);
+  void suite(
+    "Monitor and active-turn lifecycle",
+    { concurrency },
+    monitorTests
+  );
 });
